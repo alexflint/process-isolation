@@ -13,9 +13,6 @@ import collections
 import signal
 import Queue
 
-# TEMP HACK
-sys.setrecursionlimit(100)
-
 # TODO
 # - Implement docstring copying
 # - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
@@ -48,7 +45,7 @@ SPECIAL_ATTRIBUTES = [
     '__getattribute__',
     '__getattr__',
     '__process_isolation_id__',
-]
+    ]
 
 
 
