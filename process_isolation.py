@@ -14,7 +14,31 @@ import signal
 import Queue
 
 # TEMP HACK
-sys.setrecursionlimit(40)
+sys.setrecursionlimit(100)
+
+# TODO
+# - Implement docstring copying
+# - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
+# - Catch exceptions on server side
+# - Make unittest restart server if it ever crashes
+# - Add an API to restart the server if it goes down
+#   - Make it possible to automatically restart the server?
+# - Implement reloading
+# - Add the module to local sys.moduels so that it doesn't get loaded by some other module
+# - Migrate objects between client and server?
+# - Multiple separately isolated processes
+# - Deal with extra-special funtions like __getattribute__, __class__, etc
+# - Replace __getattr__ with descriptors? And add __getattr__ only if the prime implements it?
+# - Avoid reloading modules on server side
+# - Make registry and proxy_cache use weak references
+# - Wrap a module with a proxy that explicitly contains proxies for each member (for clarity)
+# - Deal with files
+# - Deal with generators
+# - Can all exceptions classes in 'exceptions' be safely copied?
+# - Deal with call to sys.exit() in child process
+# - Deal with modifications to global state
+# - Detect when cPickle fails to pickle an object and automatically proxy it instead
+# - Deal with objects that are sent to server and then modified there -- e.g. appending to a list
 
 # These attributes should never be overriden
 SPECIAL_ATTRIBUTES = [ 
@@ -63,8 +87,14 @@ class ChildProcessTerminationHandler(object):
 
 class Proxy(object):
     '''Represents a proxy constructed at server and transported to client'''
+    def __init__(self, id):
+        self._id = id
+        self._client = None
     def attach_to_client(self, client):
         self._client = client
+    @property
+    def prime_id(self):
+        return self._id
     @property
     def client(self):
         return self._client
@@ -79,8 +109,8 @@ class Delegate(object):
 
 class PrimeDelegate(Delegate):
     '''A delegate with a convenient interface to look up an object on the server.'''
-    def __init__(self, _id):
-        self._id = _id
+    def __init__(self, id):
+        self._id = id
     @property
     def prime(self):
         return self.registry[self._id]
@@ -103,47 +133,70 @@ class ObjectProxy(Proxy):
     '''A proxy for a server-side object.'''
     # To be run at server end:
     def __init__(self, id):
-        self._id = id
-        self._client = None
+        super(ObjectProxy,self).__init__(id)
+
     # To be run at client end:
     def __getattr__(self, attrname):
         if attrname in ['_client'] or attrname.startswith('__'):
-            return super(type(self),self).__getattr(attrname)
+            return super(ObjectProxy,self).__getattribute__(attrname)
         else:
-            return self.client.submit(GetAttrDelegate(self._id, attrname))
+            return self.client.execute(GetAttrDelegate(self._id, attrname))
+
     def __setattr__(self, attrname, val):
         if attrname in ['_id', '_client'] or attrname.startswith('__'):
-            return super(type(self),self).__setattr__(attrname, val)
+            return super(ObjectProxy,self).__setattr__(attrname, val)
         else:
-            return self.client.submit(SetAttrDelegate(self._id, attrname, val))
+            return self.client.execute(SetAttrDelegate(self._id, attrname, val))
+
     def __delattr__(self, attrname):
         if attrname in ['_id', '_client']:
-            return super(type(self),self).__detattr__(attrname)
+            return super(ObjectProxy,self).__detattr__(attrname)
         else:
-            return self.client.submit(DelAttrDelegate(self._id, attrname))
+            return self.client.execute(DelAttrDelegate(self._id, attrname))
+
+    # TODO: use metaclass magic to omit this for objects that are not callable
+    def __call__(self, *args, **kwargs):
+        return self.client.execute(CallDelegate(self._id, *args, **kwargs))
+
+    # TODO: use metaclass magic to omit this for objects that are not callable
+    def __len__(self):
+        return self.client.execute(FreeFuncDelegate(len, self._id))
+
+class ExceptionProxy(Exception,Proxy):
+    def __init__(self, id):
+        Proxy.__init__(self, id)
+
 
 class GetAttrDelegate(PrimeDelegate):
-    def __init__(self, _id, attrname):
-        super(type(self),self).__init__(_id)
+    def __init__(self, id, attrname):
+        super(GetAttrDelegate,self).__init__(id)
         self._attrname = attrname
     def run_on_server(self):
         return getattr(self.prime, self._attrname)
 
 class SetAttrDelegate(PrimeDelegate):
-    def __init__(self, _id, attrname, val):
-        super(type(self),self).__init__(_id)
+    def __init__(self, id, attrname, val):
+        super(SetAttrDelegate,self).__init__(id)
         self._attrname = attrname
         self._val = val
     def run_on_server(self):
         return setattr(self.prime, attrname, val)
 
 class DelAttrDelegate(PrimeDelegate):
-    def __init__(self, _id, attrname):
-        super(type(self),self).__init__(_id)
+    def __init__(self, id, attrname):
+        super(DelAttrDelegate,self).__init__(id)
         self._attrname = attrname
     def run_on_server(self):
         return delattr(self.prime, attrname)
 
+class FreeFuncDelegate(PrimeDelegate):
+    def __init__(self, func, obj_id, *args, **kwargs):
+        super(FreeFuncDelegate, self).__init__(obj_id)
+        self._func = func
+        self._args = args
+        self._kwargs = kwargs
+    def run_on_server(self):
+        return self._func(self.prime, *self._args, **self._kwargs)
 
 
 
@@ -152,15 +205,14 @@ class FunctionProxy(Proxy):
     '''A proxy for a server-side function.'''
     # To be run at server end:
     def __init__(self, id):
-        self._id = id
-        self._client = None
+        super(FunctionProxy,self).__init__(id)
     # To be run at client end:
     def __call__(self, *args, **kwargs):
-        return self.client.submit(FunctionCallDelegate(self._id, *args, **kwargs))
+        return self.client.execute(CallDelegate(self._id, *args, **kwargs))
 
-class FunctionCallDelegate(PrimeDelegate):
+class CallDelegate(PrimeDelegate):
     def __init__(self, function_id, *args, **kwargs):
-        super(type(self), self).__init__(function_id)
+        super(CallDelegate, self).__init__(function_id)
         self._args = args
         self._kwargs = kwargs
     def run_on_server(self):
@@ -184,6 +236,73 @@ class ImportDelegate(Delegate):
 
 
 
+class ExceptionalResult(object):
+    '''Used to transport exceptions from the server to the client.'''
+    def __init__(self, exception, traceback):
+        self.exception = exception
+        self.traceback = traceback
+
+
+class ProcessTerminationError(Exception):
+    def __init__(self, signal_or_returncode):
+        self._signal_or_returncode = signal_or_returncode
+
+# Reasons to re-implement pickle:
+# - support auto-wrapping of nested objects
+# - support lazily constructing proxies on client side and caching them
+# - support transporting code and types directly
+# - could dynamically create classes on server side and transport them to client side
+# - pickle can't transport tracebacks
+
+class Registry(dict):
+    def wrap(self, obj):
+        if isinstance(obj, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
+            self[id(obj)] = obj
+            return FunctionProxy(id(obj))
+
+        elif isinstance(obj, (types.ModuleType, types.FileType)):
+            self[id(obj)] = obj
+            return ObjectProxy(id(obj))
+
+        elif isinstance(obj, type):
+            self[id(obj)] = obj
+            return TypeProxy(obj)
+
+        elif isinstance(obj, BaseException):
+            if type(obj).__module__ in ('exceptions', '__builtin__'):
+                # TODO: check that we can safely transport all standard exceptions
+                return obj
+            else:
+                self[id(obj)] = obj
+                return ExceptionProxy(id(obj))
+
+        elif type(obj).__module__ != '__builtin__':
+            self[id(obj)] = obj
+            return ObjectProxy(id(obj))
+
+        else:
+            return obj
+
+
+class TypeProxy(type):
+    def attach_to_client(cls, client):
+        cls._client = client
+
+    def new_instance(cls, *args, **kwargs):
+        return self._client.CallDelegate(self._class_id, *args, **kwargs)
+    
+    def __new__(cls, prime_class):
+        # TODO: find or create proxies for the base classes of prime_class
+        bases = (ObjectProxy,)
+        members = {'__new__': TypeProxy.new_instance,
+                   '_class_id': id(prime_class),
+                   '_client': None
+                   }
+        return super(TypeProxy,cls).__new__(prime_class.__name__, bases, members)
+
+
+
+# NOT CURRENTLY USED...
 def make_proxy_type(cls, registry):
     if cls in (type, object):
         return cls
@@ -211,28 +330,6 @@ def make_proxy_type(cls, registry):
         return proxy_cls
 
 
-
-# Reasons to re-implement pickle:
-# - support auto-wrapping of nested objects
-# - support lazily constructing proxies on client side and caching them
-# - support transporting code and types directly
-
-class Registry(dict):
-    def wrap(self, obj):
-        if isinstance(obj, types.FunctionType):  # do _not_ use callable(...) here
-            self[id(obj)] = obj
-            return FunctionProxy(id(obj))
-        elif isinstance(obj, types.ModuleType):
-            self[id(obj)] = obj
-            return ObjectProxy(id(obj))
-        elif type(obj).__module__ != '__builtin__':
-            self[id(obj)] = obj
-            return ObjectProxy(id(obj))
-        else:
-            return obj
-
-
-
 class Server(object):
     '''Represents the server that listens for delegates and runs them.'''
     def __init__(self, delegate_queue, result_queue):
@@ -241,32 +338,31 @@ class Server(object):
         self._registry = Registry()
 
     def loop(self):
-        while True:
+        terminate_flag = False
+        while not terminate_flag:
             # Get the next delegate
             delegate = self._delegate_queue.get()
 
-            # Allow the delegate to run in the server environment
+            # Attach the delegate to the server environment
             delegate.attach_to_server(self)
 
-            # TODO: catch exceptions
             try:
-                result = delegate.run_on_server()
-            except TerminateProcess as ex:
-                # Indicates that the client requested that we terminate
-                self._result_queue.put(True)
-                return
+                # Run the delegate in the local environment and wrap the result
+                result = self._registry.wrap(delegate.run_on_server())
+            except TerminateProcess:
+                # This exception indicates that the client requested that we terminate
+                result = True
+                terminate_flag = True
+            except:
+                # Any other exception gets transported back to the client
+                ex_type, ex_value, ex_traceback = sys.exc_info()
+                result = ExceptionalResult(self._registry.wrap(ex_value), None)
+                # TODO: find a way to transport a traceback (pickle can't serialize it)
 
-            # If necessary, replace the result with a proxy
-            wrapped_result = self._registry.wrap(result)
-
-            # Return the result
-            self._result_queue.put(wrapped_result)
+            # Send the result to the client
+            self._result_queue.put(result)
 
 
-
-class ProcessTerminationError(Exception):
-    def __init__(self, signal_or_returncode):
-        self._signal_or_returncode = signal_or_returncode
 
 class Client(object):
     '''Represents a client that sends delegates and listens for results.'''
@@ -277,6 +373,7 @@ class Client(object):
         self._server_process = server_process
         self._waiting_for_result = False
         self._finishing = False
+        self._proxy_cache = {}
         atexit.register(self._atexit)
         ChildProcessTerminationHandler.register_listener(server_process, self._on_sigchld)
 
@@ -293,7 +390,7 @@ class Client(object):
 
         # If this client is currently waiting for a result then unwind
         # the stack up to the appropriate point. Otherwise, the
-        # process is_alive() flag will be checked next time submit()
+        # process is_alive() flag will be checked next time execute()
         # is called
         if self._waiting_for_result:
             raise ProcessTerminationError(self._server_process._popen.returncode)
@@ -301,59 +398,6 @@ class Client(object):
     def _check_alive(self):
         if not self._server_process.is_alive():
             raise ProcessTerminationError(self._server_process._popen.returncode)
-
-    def _pop(self):
-        while True:
-            try:
-                # Note that the result could be None!
-                return self._result_queue.get(timeout=1)
-            except Queue.Empty as ex:
-                pass
-            
-
-    def submit(self, delegate):
-        # Dispatch the delegate
-        # TODO: can the queue itself throw exceptions?
-        self._delegate_queue.put(delegate)
-
-        # Get the result
-        # TODO: handle exceptions passed within result
-        # TODO: can the queue itself throw exceptions?
-        try:
-            self._check_alive()
-            self._waiting_for_result = True
-            self._check_alive()
-            result = self._pop()
-            #result = self._result_queue.get()
-            self._check_alive()
-        finally:
-            self._waiting_for_result = False
-
-        # Attach the result to the client environment
-        # TODO: replace result with an earlier proxy for the same object if one exists
-        # TODO: find any other proxy objects within result that should be attached
-        if isinstance(result, Proxy):
-            result.attach_to_client(self)
-
-        # Return the result
-        return result
-
-    def finish(self):
-        # Make sure the SIGCHLD signal handler doesn't throw any exceptions
-        self._finishing = True
-
-        # Do not call submit() because that function will check
-        # whether the process is alive and throw an exception if not
-        # TODO: can the queue itself throw exceptions?
-        self._delegate_queue.put(TerminateDelegate())
-
-        # Wait for acknowledgement
-        # TODO: can the result queue throw an exception
-        result = self._pop()
-        #result = self._result_queue.get()
-
-    def import_remotely(self, module_name):
-        return self.submit(ImportDelegate(module_name, sys.path))
 
     def _atexit(self):
         if self._server_process.is_alive():
@@ -363,111 +407,115 @@ class Client(object):
                 self._server_process.join()
             except ProcessTerminationError as ex:
                 # Ignore it for now
-                pass
+                pass            
 
-def launch_server_process():
-    # Create the queues
-    request_queue = multiprocessing.Queue()
-    response_queue = multiprocessing.Queue()
+    @property
+    def subprocess(self):
+        return self._server_process
 
-    # Launch the server process
-    server = Server(request_queue, response_queue)
-    server_process = multiprocessing.Process(target=server.loop)
-    server_process.start()
+    @property
+    def pid(self):
+        return self._server_process.pid
 
-    # Create a client to talk to the server
-    return Client(server_process, request_queue, response_queue)
+    def resolve(self, proxy):
+        if proxy.prime_id in self._proxy_cache:
+            # Replace the proxy with the cached version so that
+            # proxyect identity tests match the server
+            return self._proxy_cache[proxy.prime_id]
+        else:
+            proxy.attach_to_client(self)
+            self._proxy_cache[proxy.prime_id] = proxy
+            return proxy
+
+    def execute(self, delegate):
+        # Dispatch the delegate
+        # TODO: can the queue itself throw exceptions?
+        self._delegate_queue.put(delegate)
+
+        # Get the result
+        # TODO: can the queue itself throw exceptions?
+        try:
+            self._check_alive()
+            self._waiting_for_result = True
+            self._check_alive()
+            result = self._result_queue.get()
+            self._check_alive()
+        finally:
+            self._waiting_for_result = False
+
+        # Unpack any exception raised on the server side
+        if isinstance(result, ExceptionalResult):
+            raise result.exception
+
+        # Replace with a cached proxy if we have one and attach it to the client environment
+        if isinstance(result, Proxy):
+            return self.resolve(result)
+        else:
+            return result
+
+    def finish(self):
+        # Make sure the SIGCHLD signal handler doesn't throw any exceptions
+        self._finishing = True
+
+        # Do not call execute() because that function will check
+        # whether the process is alive and throw an exception if not
+        # TODO: can the queue itself throw exceptions?
+        self._delegate_queue.put(TerminateDelegate())
+
+        # Wait for acknowledgement
+        # TODO: can the result queue throw an exception
+        result = self._result_queue.get()
+
+
+class IsolationContext(object):
+    def __init__(self):
+        self._client = None
+
+    @property
+    def client(self): return self._client
+
+    def start_subprocess(self):
+        # Create the queues
+        request_queue = multiprocessing.Queue()
+        response_queue = multiprocessing.Queue()
+
+        # Launch the server process
+        server = Server(request_queue, response_queue)  # Do not keep a reference to this object!
+        server_process = multiprocessing.Process(target=server.loop)
+        server_process.start()
+
+        # Create a client to talk to the server
+        self._client = Client(server_process, request_queue, response_queue)
+
+    def ensure_started(self):
+        if self._client is None:
+            self.start_subprocess()
+
+    def import_isolated(self, module_name):
+        self.ensure_started()
+        return self.client.execute(ImportDelegate(module_name, sys.path))
 
 
 
-def client_singleton():
-    if client_singleton._instance is None:
-        client_singleton._instance = launch_server_process()
-    return client_singleton._instance
-client_singleton._instance = None
 
+def default_context():
+    if default_context._instance is None:
+        default_context._instance = IsolationContext()
+    return default_context._instance
+default_context._instance = None
 
 def import_isolated(module_name):
-    client = client_singleton()
-    module = client.import_remotely(module_name)
-    module.__process_isolation_client__ = client
-    return module
-
-
-class HardExit(Delegate):
-    def run_on_server(self):
-        sys.exit(0)
-
-import somemodule
-somemodule_isolated = import_isolated('somemodule')
-
-def test_proxy():
-    D = collections.OrderedDict(local=somemodule, remote=somemodule_isolated)
-    for name,mod in D.iteritems():
-        print name,'version:'
-        print 'mod.x:'
-        print mod.x
-        print 'mod.foo():'
-        print mod.foo()
-        print 'mod.bar(2,3):'
-        print mod.bar(2,3)
-        print 'w = mod.Woo():'
-        w = mod.Woo()
-        print 'w.hoo():'
-        print w.hoo()
-        print 'mod.get():'
-        print mod.get()
-        print 'mod.incr():'
-        mod.incr()
-        print 'mod.get():'
-        print mod.get()
-        print 'g = mod.Getter():'
-        g = mod.Getter()
-        print 'g.get():'
-        print g.get()
-        print '\n'
-
-    print 'attempting hard abort...'
-    try:
-        somemodule_isolated.hard_abort()
-        print 'returned'
-    except ProcessTerminationError as ex:
-        print 'caught segfault: ',str(ex)
-            
-
-
-        
+    return default_context().import_isolated(module_name)
 
 
 
 
 
 
-def onsignal(signal, stackframe):
-    print 'got signal',signal
-
-def test_kill():
-    signal.signal(signal.SIGCHLD, onsignal)
-    somemodule_isolated.__process_isolation_client__.submit(HardExit())
 
 
-def child_proc():
-    print 'Child started...'
-    time.sleep(1)
-    print 'Child finishing...'
 
-def raise_exception(signum, traceback):
-    raise Exception('signal caught!')
 
-def test_exception():
-    signal.signal(signal.SIGCHLD, raise_exception)
-    multiprocessing.Process(target=child_proc).start()
-    try:
-        time.sleep(3)
-    except Exception as ex:
-        print 'caught "%s"' % str(ex)
 
-if __name__ == '__main__':
-    test_proxy()
-    #test_kill()
-    #test_exception()
+
+
