@@ -7,7 +7,6 @@ class HardExit(Delegate):
 
 class TestProcessIsolation(unittest.TestCase):
     def setUp(self):
-        print 'setup'
         self.ctx = IsolationContext()
         self.mod = self.ctx.import_isolated('somemodule')
 
@@ -73,11 +72,43 @@ class TestProcessIsolation(unittest.TestCase):
 
     def test_standard_exception(self):
         self.assertRaisesRegexp(Exception, 'foobar', self.mod.raise_standard_exception)
+        self.assert_remote()
+
+    def test_two_copies_of_class(self):
+        c1 = self.mod.SomeClass
+        c2 = self.mod.SomeClass
+        assert c1 is c2
+
+    def test_instance(self):
+        inst = self.mod.SomeClass(11)
+        assert inst.x == 11
+        self.assert_remote()
+
+    def test_class_identity(self):
+        obj = self.mod.make_instance()
+        assert isinstance(obj, self.mod.SomeClass)
+        assert isinstance(obj, self.mod.SomeBase)
+
+    def test_len(self):
+        self.assertEqual(self.mod.ObjectWithLength(), 3)
+        
+    def test_str(self):
+        self.assertEqual(str(self.mod.ObjectWithStr()), 'abc')
+
+    def test_repr(self):
+        self.assertEqual(str(self.mod.ObjectWithRepr()), 'abc')
 
     def test_custom_exception(self):
-        print self.mod.CustomException
-        self.assertRaises(self.mod.CustomException,
-                          self.mod.raise_custom_exception)
+        exception_type = self.mod.CustomException
+        try:
+            self.mod.raise_custom_exception()
+        except:
+            ex = sys.exc_value
+            print 'Unittest caught an exception:'+str(ex)
+            print 'isinstance?'
+            print isinstance(ex, exception_type)
+            print 'instancecheck?'
+            print exception_type.__instancecheck__(ex)
 
 if __name__ == '__main__':
     unittest.main()

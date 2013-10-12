@@ -12,15 +12,18 @@ import types
 import collections
 import signal
 import Queue
+import traceback
+import inspect
 
 # TODO
+# - Switch to the lower-level multiprocessing.Pipe in order to get access to the pickler object
+
+
 # - Implement docstring copying
 # - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
-# - Catch exceptions on server side
-# - Make unittest restart server if it ever crashes
 # - Add an API to restart the server if it goes down
 #   - Make it possible to automatically restart the server?
-# - Implement reloading
+# - Implement reload(mymodule)
 # - Add the module to local sys.moduels so that it doesn't get loaded by some other module
 # - Migrate objects between client and server?
 # - Multiple separately isolated processes
@@ -36,6 +39,20 @@ import Queue
 # - Deal with modifications to global state
 # - Detect when cPickle fails to pickle an object and automatically proxy it instead
 # - Deal with objects that are sent to server and then modified there -- e.g. appending to a list
+# - Transport stack trace from server to client and append it to the system one at the client end
+# - Get rid of RemoteId -- too confusing!
+
+
+# Reasons to re-implement pickle:
+# - support auto-wrapping of nested objects
+# - support lazily constructing proxies on client side and caching them
+# - support transporting code and types directly
+# - could dynamically create classes on server side and transport them to client side
+# - pickle can't transport tracebacks
+# - pickle does not support __getstate__, __setstate__, etc on __getnewargs__ on types (i.e. metaclass instances)
+# - When pickling exceptions, cPickle doesn't follow the pickle protocol at all
+#   - in particular, the exception constructor must accept zero args
+
 
 # These attributes should never be overriden
 SPECIAL_ATTRIBUTES = [ 
@@ -44,12 +61,11 @@ SPECIAL_ATTRIBUTES = [
     '__bases__',
     '__getattribute__',
     '__getattr__',
-    '__process_isolation_id__',
     ]
 
 
 
-class ChildProcessTerminationHandler(object):
+class ChildProcessSignalHandler(object):
     '''Helper to catch SIGCHLD signals and dispatch them.'''
     _listeners = {}
     _processes = {}
@@ -95,6 +111,15 @@ class Proxy(object):
     @property
     def client(self):
         return self._client
+
+class PrimeRef(object):
+    def __init__(self, id):
+        self._id = id
+    @property
+    def id(self):
+        return self._id
+    def __str__(self):
+        return 'RemoteId[%d]' % self._id
 
 class Delegate(object):
     '''Represents a delegate constructed at client and transported to server.'''
@@ -157,11 +182,15 @@ class ObjectProxy(Proxy):
 
     # TODO: use metaclass magic to omit this for objects that are not callable
     def __len__(self):
-        return self.client.execute(FreeFuncDelegate(len, self._id))
+        return self.client.execute(FreeFuncDelegate(len, PrimeRef(self._id)))
 
 class ExceptionProxy(Exception,Proxy):
     def __init__(self, id):
+        print 'Creating an ExceptionProxy with id='+str(id)
         Proxy.__init__(self, id)
+
+    def __reduce__(self):
+        return ExceptionProxy, (self._id,)
 
 
 class GetAttrDelegate(PrimeDelegate):
@@ -186,14 +215,18 @@ class DelAttrDelegate(PrimeDelegate):
     def run_on_server(self):
         return delattr(self.prime, attrname)
 
-class FreeFuncDelegate(PrimeDelegate):
-    def __init__(self, func, obj_id, *args, **kwargs):
-        super(FreeFuncDelegate, self).__init__(obj_id)
+class FreeFuncDelegate(Delegate):
+    def __init__(self, func, *args, **kwargs):
+        super(FreeFuncDelegate, self).__init__()
         self._func = func
         self._args = args
         self._kwargs = kwargs
+        print 'delegate on client: '+str(args)
     def run_on_server(self):
-        return self._func(self.prime, *self._args, **self._kwargs)
+        resolved_args = [self.registry[v.id] if isinstance(v,PrimeRef) else v for v in self._args]
+        resolved_kwargs = {k:self.registry[v.id] if isinstance(v,PrimeRef) else v for k,v in self._kwargs}
+        print 'resolved delegate on server: '+str(resolved_args)
+        return self._func(*resolved_args, **resolved_kwargs)
 
 
 
@@ -244,26 +277,29 @@ class ProcessTerminationError(Exception):
     def __init__(self, signal_or_returncode):
         self._signal_or_returncode = signal_or_returncode
 
-# Reasons to re-implement pickle:
-# - support auto-wrapping of nested objects
-# - support lazily constructing proxies on client side and caching them
-# - support transporting code and types directly
-# - could dynamically create classes on server side and transport them to client side
-# - pickle can't transport tracebacks
 
 class Registry(dict):
     def wrap(self, obj):
+        print 'Wrapping: '+repr(obj)
+
         if isinstance(obj, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
+            print '  wrapping as callable'
             self[id(obj)] = obj
             return FunctionProxy(id(obj))
 
         elif isinstance(obj, (types.ModuleType, types.FileType)):
+            print '  wrapping as module or file'
             self[id(obj)] = obj
             return ObjectProxy(id(obj))
 
         elif isinstance(obj, type):
+            print '  wrapping as type'
             self[id(obj)] = obj
-            return TypeProxy(obj)
+            # Rather than returning a type directly, which would be
+            # rejected by cPickle, we return a Blueprint, which is an
+            # ordinary object containing all the information necessary
+            # to construct a TypeProxy at the client site
+            return TypeProxyBlueprint(obj)
 
         elif isinstance(obj, BaseException):
             if type(obj).__module__ in ('exceptions', '__builtin__'):
@@ -271,7 +307,9 @@ class Registry(dict):
                 return obj
             else:
                 self[id(obj)] = obj
-                return ExceptionProxy(id(obj))
+                proxy = ExceptionProxy(id(obj))
+                print 'Wrapped a %s with an ExceptionProxy'%str(type(obj))
+                return proxy
 
         elif type(obj).__module__ != '__builtin__':
             self[id(obj)] = obj
@@ -280,51 +318,45 @@ class Registry(dict):
         else:
             return obj
 
+class TypeProxyBlueprint(object):
+    '''Represents the information needed to construct an instance of
+    TypeProxy, in a form that, for the benefit of cPickle, is not
+    itself a class (since classes are pickled by simply storing their
+    name).'''
+    def __init__(self, prime_class):
+        self._name = prime_class.__name__
+        self._module = prime_class.__module__
+        self._class_id = id(prime_class)
 
-class TypeProxy(type):
-    def attach_to_client(cls, client):
-        cls._client = client
+class TypeProxy(type,Proxy):
+    def attach_to_client(proxyclass, client):
+        proxyclass._client = client
 
-    def new_instance(cls, *args, **kwargs):
-        return self._client.CallDelegate(self._class_id, *args, **kwargs)
+    def new_instance(proxyclass, *args, **kwargs):
+        return proxyclass._client.execute(CallDelegate(proxyclass._id, *args, **kwargs))
+
+    def __instancecheck__(proxyclass, obj):
+        print 'Checking whether a '+repr(obj.__class__)+' is an instance of '+repr(proxyclass)
+        return proxyclass._client.execute(FreeFuncDelegate(isinstance,
+                                                           PrimeRef(obj.prime_id),
+                                                           PrimeRef(proxyclass.prime_id)))
+
+    def __init__(proxyclass, blueprint):
+        print 'TypeProxy.__init__ was called'
+        Proxy.__init__(proxyclass, blueprint._class_id)
     
-    def __new__(cls, prime_class):
+
+    def __new__(metaclass, blueprint):
         # TODO: find or create proxies for the base classes of prime_class
-        bases = (ObjectProxy,)
-        members = {'__new__': TypeProxy.new_instance,
-                   '_class_id': id(prime_class),
-                   '_client': None
-                   }
-        return super(TypeProxy,cls).__new__(prime_class.__name__, bases, members)
+        proxyname = blueprint._name
+        proxybases = (object,)
+        proxymembers = {
+            '__new__': TypeProxy.new_instance,
+            '_client': None,
+            }
+        return type.__new__(metaclass, proxyname, proxybases, proxymembers)
 
 
-
-# NOT CURRENTLY USED...
-def make_proxy_type(cls, registry):
-    if cls in (type, object):
-        return cls
-    elif id(cls) in registry:
-        return registry[ id(cls) ]
-    else:
-        proxy_name = cls.__name__ + 'Proxy'
-        proxy_bases = tuple([ make_proxy_type(base, registry) for base in cls.__bases__ ])
-        proxy_cls = type(proxy_name, proxy_bases, {})
-
-        # Our proxy must have certain overrides
-        if '__new__' not in proxy_class.__dict__:
-            proxy_cls.__new__ = ProxyDescriptor('__new__')
-        if '__dir__' not in proxy_class.__dict__:
-            proxy_cls.__dir__ = proxied_instance_method(dir)
-        if '__len__' in cls.__dict__ and '__len__' not in proxy_class.__dict__:
-            proxy_cls.__len__ = proxied_instance_method(len)
-
-        proxy_cls.__process_isolation_id__ = id(cls)
-        proxy_class.__getattribute__ = proxy_getattribute
-        proxy_class.__delattr__ = proxy_delattribute
-        proxy_class.__setattr__ = proxy_setattribute
-
-        registry[ id(cls) ] = proxy_cls
-        return proxy_cls
 
 
 class Server(object):
@@ -353,6 +385,10 @@ class Server(object):
             except:
                 # Any other exception gets transported back to the client
                 ex_type, ex_value, ex_traceback = sys.exc_info()
+                print 'Caught on server:'
+                print ex_value
+                traceback.print_exc()
+
                 result = ExceptionalResult(self._registry.wrap(ex_value), None)
                 # TODO: find a way to transport a traceback (pickle can't serialize it)
 
@@ -372,7 +408,7 @@ class Client(object):
         self._finishing = False
         self._proxy_cache = {}
         atexit.register(self._atexit)
-        ChildProcessTerminationHandler.register_listener(server_process, self._on_sigchld)
+        ChildProcessSignalHandler.register_listener(server_process, self._on_sigchld)
 
     def _on_sigchld(self):
         assert not self._server_process.is_alive()
@@ -440,12 +476,21 @@ class Client(object):
         finally:
             self._waiting_for_result = False
 
+        print 'got result: '+repr(result)
+
         # Unpack any exception raised on the server side
         if isinstance(result, ExceptionalResult):
+            print 'got an exception result'
             raise result.exception
+
+        # Unpack any types
+        if isinstance(result, TypeProxyBlueprint):
+            result = TypeProxy(result)
+            # make sure to pass this through the check below too...
 
         # Replace with a cached proxy if we have one and attach it to the client environment
         if isinstance(result, Proxy):
+            print 'Resolving at client: '+str(result)
             return self.resolve(result)
         else:
             return result
@@ -496,10 +541,9 @@ class IsolationContext(object):
 
 
 def default_context():
-    if default_context._instance is None:
+    if not hasattr(default_context, '_instance'):
         default_context._instance = IsolationContext()
     return default_context._instance
-default_context._instance = None
 
 def import_isolated(module_name):
     return default_context().import_isolated(module_name)

@@ -52,7 +52,14 @@ def hard_abort():
     print 'about to abort()...'
     os.abort()  # will do a hard exit of the process
 
-class SomeClass(object):
+def make_range(n):
+    return range(n)
+
+class SomeBase(object):
+    def get_message(self):
+        return "hello world"
+
+class SomeClass(SomeBase):
     @reportpid
     def __init__(self, x):
         self._x = x
@@ -72,8 +79,13 @@ class SomeClass(object):
     @property
     @reportpid
     def x(self):
+        print 'Getting property x at pid=%d' % os.getpid()
         return self._x
 
+def make_instance():
+    return SomeClass(22)
+
+@reportpid
 def raise_standard_exception():
     raise Exception('foobar')
 
@@ -81,4 +93,17 @@ class CustomException(Exception):
     pass
 
 def raise_custom_exception():
-    raise CustomException
+    print 'Raising CustomException now.'
+    raise CustomException()
+
+class ObjectWithLength(object):
+    def __len__(self):
+        return 3
+
+class ObjectWithStr(object):
+    def __str__(self):
+        return 'abc'
+
+class ObjectWithRepr(object):
+    def __repr__(self):
+        return 'abc'
