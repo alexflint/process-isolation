@@ -90,13 +90,15 @@ class TestProcessIsolation(unittest.TestCase):
         assert isinstance(obj, self.mod.SomeBase)
 
     def test_len(self):
-        self.assertEqual(self.mod.ObjectWithLength(), 3)
+        self.assertEqual(len(self.mod.ObjectWithLength()), 3)
         
     def test_str(self):
-        self.assertEqual(str(self.mod.ObjectWithStr()), 'abc')
+        obj = self.mod.ObjectWithStr()
+        self.assertEqual(str(obj), 'this is str')
 
     def test_repr(self):
-        self.assertEqual(str(self.mod.ObjectWithRepr()), 'abc')
+        obj = self.mod.ObjectWithRepr()
+        self.assertEqual(repr(obj), 'this is repr')
 
     def test_custom_exception(self):
         exception_type = self.mod.CustomException

@@ -64,6 +64,14 @@ SPECIAL_ATTRIBUTES = [
     ]
 
 
+# Produce a representation using the default repr() regardless of
+# whether the object provides an implementation of its own
+def raw_repr(obj):
+    if obj.__class__.__module__ == '__builting__':
+        return repr(obj)
+    else:
+        return object.__repr__(obj)
+    
 
 class ChildProcessSignalHandler(object):
     '''Helper to catch SIGCHLD signals and dispatch them.'''
@@ -98,6 +106,15 @@ class ChildProcessSignalHandler(object):
 
 
 
+class RemoteRef(object):
+    '''Represents a reference to a remote object.'''
+    def __init__(self, id):
+        self._id = id
+    @property
+    def id(self):
+        return self._id
+
+
 class Proxy(object):
     '''Represents a proxy constructed at server and transported to client'''
     def __init__(self, id):
@@ -109,17 +126,11 @@ class Proxy(object):
     def prime_id(self):
         return self._id
     @property
+    def prime_ref(self):
+        return RemoteRef(self._id)
+    @property
     def client(self):
         return self._client
-
-class PrimeRef(object):
-    def __init__(self, id):
-        self._id = id
-    @property
-    def id(self):
-        return self._id
-    def __str__(self):
-        return 'RemoteId[%d]' % self._id
 
 class Delegate(object):
     '''Represents a delegate constructed at client and transported to server.'''
@@ -154,36 +165,42 @@ class TerminateDelegate(Delegate):
 class ObjectProxy(Proxy):
     '''A proxy for a server-side object.'''
     # To be run at server end:
-    def __init__(self, id):
-        super(ObjectProxy,self).__init__(id)
+    def __init__(self, prime_id):
+        super(ObjectProxy,self).__init__(prime_id)
 
     # To be run at client end:
     def __getattr__(self, attrname):
         if attrname in ['_client'] or attrname.startswith('__'):
             return super(ObjectProxy,self).__getattribute__(attrname)
         else:
-            return self.client.execute(GetAttrDelegate(self._id, attrname))
+            return self.client.execute(GetAttrDelegate(self.prime_id, attrname))
 
     def __setattr__(self, attrname, val):
         if attrname in ['_id', '_client'] or attrname.startswith('__'):
             return super(ObjectProxy,self).__setattr__(attrname, val)
         else:
-            return self.client.execute(SetAttrDelegate(self._id, attrname, val))
+            return self.client.execute(SetAttrDelegate(self.prime_id, attrname, val))
 
     def __delattr__(self, attrname):
         if attrname in ['_id', '_client']:
             return super(ObjectProxy,self).__detattr__(attrname)
         else:
-            return self.client.execute(DelAttrDelegate(self._id, attrname))
+            return self.client.execute(DelAttrDelegate(self.prime_id, attrname))
 
     # TODO: use metaclass magic to omit this for objects that are not callable
     def __call__(self, *args, **kwargs):
-        return self.client.execute(CallDelegate(self._id, *args, **kwargs))
+        return self.client.execute(CallDelegate(self.prime_id, *args, **kwargs))
 
     # TODO: use metaclass magic to omit this for objects that are not callable
     def __len__(self):
-        return self.client.execute(FreeFuncDelegate(len, PrimeRef(self._id)))
+        return self.client.execute(FreeFuncDelegate(len, self.prime_ref))
 
+    def __str__(self):
+        return self.client.execute(FreeFuncDelegate(str, self.prime_ref))
+
+    def __repr__(self):
+        return self.client.execute(FreeFuncDelegate(repr, self.prime_ref))
+    
 class ExceptionProxy(Exception,Proxy):
     def __init__(self, id):
         print 'Creating an ExceptionProxy with id='+str(id)
@@ -221,11 +238,10 @@ class FreeFuncDelegate(Delegate):
         self._func = func
         self._args = args
         self._kwargs = kwargs
-        print 'delegate on client: '+str(args)
+        print 'delegate on client: '+raw_repr(args)
     def run_on_server(self):
-        resolved_args = [self.registry[v.id] if isinstance(v,PrimeRef) else v for v in self._args]
-        resolved_kwargs = {k:self.registry[v.id] if isinstance(v,PrimeRef) else v for k,v in self._kwargs}
-        print 'resolved delegate on server: '+str(resolved_args)
+        resolved_args = [self.registry[v.id] if isinstance(v,RemoteRef) else v for v in self._args]
+        resolved_kwargs = {k:self.registry[v.id] if isinstance(v,RemoteRef) else v for k,v in self._kwargs}
         return self._func(*resolved_args, **resolved_kwargs)
 
 
@@ -278,46 +294,6 @@ class ProcessTerminationError(Exception):
         self._signal_or_returncode = signal_or_returncode
 
 
-class Registry(dict):
-    def wrap(self, obj):
-        print 'Wrapping: '+repr(obj)
-
-        if isinstance(obj, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
-            print '  wrapping as callable'
-            self[id(obj)] = obj
-            return FunctionProxy(id(obj))
-
-        elif isinstance(obj, (types.ModuleType, types.FileType)):
-            print '  wrapping as module or file'
-            self[id(obj)] = obj
-            return ObjectProxy(id(obj))
-
-        elif isinstance(obj, type):
-            print '  wrapping as type'
-            self[id(obj)] = obj
-            # Rather than returning a type directly, which would be
-            # rejected by cPickle, we return a Blueprint, which is an
-            # ordinary object containing all the information necessary
-            # to construct a TypeProxy at the client site
-            return TypeProxyBlueprint(obj)
-
-        elif isinstance(obj, BaseException):
-            if type(obj).__module__ in ('exceptions', '__builtin__'):
-                # TODO: check that we can safely transport all standard exceptions
-                return obj
-            else:
-                self[id(obj)] = obj
-                proxy = ExceptionProxy(id(obj))
-                print 'Wrapped a %s with an ExceptionProxy'%str(type(obj))
-                return proxy
-
-        elif type(obj).__module__ != '__builtin__':
-            self[id(obj)] = obj
-            return ObjectProxy(id(obj))
-
-        else:
-            return obj
-
 class TypeProxyBlueprint(object):
     '''Represents the information needed to construct an instance of
     TypeProxy, in a form that, for the benefit of cPickle, is not
@@ -332,26 +308,22 @@ class TypeProxy(type,Proxy):
     def attach_to_client(proxyclass, client):
         proxyclass._client = client
 
-    def new_instance(proxyclass, *args, **kwargs):
+    def _new_instance(proxyclass, *args, **kwargs):
         return proxyclass._client.execute(CallDelegate(proxyclass._id, *args, **kwargs))
 
     def __instancecheck__(proxyclass, obj):
-        print 'Checking whether a '+repr(obj.__class__)+' is an instance of '+repr(proxyclass)
-        return proxyclass._client.execute(FreeFuncDelegate(isinstance,
-                                                           PrimeRef(obj.prime_id),
-                                                           PrimeRef(proxyclass.prime_id)))
+        return proxyclass._client.execute(FreeFuncDelegate(isinstance, obj.prime_ref, proxyclass.prime_ref))
 
     def __init__(proxyclass, blueprint):
         print 'TypeProxy.__init__ was called'
         Proxy.__init__(proxyclass, blueprint._class_id)
-    
 
     def __new__(metaclass, blueprint):
         # TODO: find or create proxies for the base classes of prime_class
         proxyname = blueprint._name
         proxybases = (object,)
         proxymembers = {
-            '__new__': TypeProxy.new_instance,
+            '__new__': TypeProxy._new_instance,
             '_client': None,
             }
         return type.__new__(metaclass, proxyname, proxybases, proxymembers)
@@ -364,7 +336,10 @@ class Server(object):
     def __init__(self, delegate_queue, result_queue):
         self._delegate_queue = delegate_queue
         self._result_queue = result_queue
-        self._registry = Registry()
+        self._registry = dict()
+
+    def __getstate__(self):
+        raise Exception('You attempted to pickle the server object')
 
     def loop(self):
         terminate_flag = False
@@ -377,7 +352,7 @@ class Server(object):
 
             try:
                 # Run the delegate in the local environment and wrap the result
-                result = self._registry.wrap(delegate.run_on_server())
+                result = self.wrap(delegate.run_on_server())
             except TerminateProcess:
                 # This exception indicates that the client requested that we terminate
                 result = True
@@ -389,13 +364,55 @@ class Server(object):
                 print ex_value
                 traceback.print_exc()
 
-                result = ExceptionalResult(self._registry.wrap(ex_value), None)
+                result = ExceptionalResult(self.wrap(ex_value), None)
                 # TODO: find a way to transport a traceback (pickle can't serialize it)
 
             # Send the result to the client
+            print 'server putting object of type %s onto result queue' % str(result.__class__)
             self._result_queue.put(result)
 
 
+    def wrap(self, prime):
+        print 'Wrapping: '+repr(prime)
+
+        if id(prime) in self._registry:
+            return self._registry[id(prime)]
+
+        elif isinstance(prime, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
+            print '  wrapping as callable'
+            self._registry[id(prime)] = prime
+            return FunctionProxy(id(prime))
+
+        elif isinstance(prime, (types.ModuleType, types.FileType)):
+            print '  wrapping as module or file'
+            self._registry[id(prime)] = prime
+            return ObjectProxy(id(prime))
+
+        elif isinstance(prime, type):
+            print '  wrapping as type'
+            self._registry[id(prime)] = prime
+            # Rather than returning a type directly, which would be
+            # rejected by cPickle, we return a Blueprint, which is an
+            # ordinary object containing all the information necessary
+            # to construct a TypeProxy at the client site
+            return TypeProxyBlueprint(prime)
+
+        elif isinstance(prime, BaseException):
+            if type(prime).__module__ in ('exceptions', '__builtin__'):
+                # TODO: check that we can safely transport all standard exceptions
+                return prime
+            else:
+                self._registry[id(prime)] = prime
+                proxy = ExceptionProxy(id(prime))
+                print 'Wrapped a %s with an ExceptionProxy'%str(type(prime))
+                return proxy
+
+        elif type(prime).__module__ != '__builtin__':
+            self._registry[id(prime)] = prime
+            return ObjectProxy(id(prime))
+
+        else:
+            return prime
 
 class Client(object):
     '''Represents a client that sends delegates and listens for results.'''
@@ -409,6 +426,9 @@ class Client(object):
         self._proxy_cache = {}
         atexit.register(self._atexit)
         ChildProcessSignalHandler.register_listener(server_process, self._on_sigchld)
+
+    def __getstate__(self):
+        raise Exception('You attempted to pickle the client object')
 
     def _on_sigchld(self):
         assert not self._server_process.is_alive()
@@ -463,7 +483,9 @@ class Client(object):
     def execute(self, delegate):
         # Dispatch the delegate
         # TODO: can the queue itself throw exceptions?
+        print 'client putting object of type %s onto delegate queue' % str(delegate.__class__)
         self._delegate_queue.put(delegate)
+        print 'executing...'
 
         # Get the result
         # TODO: can the queue itself throw exceptions?
@@ -476,7 +498,7 @@ class Client(object):
         finally:
             self._waiting_for_result = False
 
-        print 'got result: '+repr(result)
+        print 'got result: '+raw_repr(result)
 
         # Unpack any exception raised on the server side
         if isinstance(result, ExceptionalResult):
@@ -490,7 +512,7 @@ class Client(object):
 
         # Replace with a cached proxy if we have one and attach it to the client environment
         if isinstance(result, Proxy):
-            print 'Resolving at client: '+str(result)
+            print 'Resolving at client: '+raw_repr(result)
             return self.resolve(result)
         else:
             return result

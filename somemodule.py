@@ -102,8 +102,8 @@ class ObjectWithLength(object):
 
 class ObjectWithStr(object):
     def __str__(self):
-        return 'abc'
+        return 'this is str'
 
 class ObjectWithRepr(object):
     def __repr__(self):
-        return 'abc'
+        return 'this is repr'
