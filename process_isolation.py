@@ -134,14 +134,14 @@ class RemoteRef(object):
 
 class Proxy(object):
     '''Represents a proxy constructed at server and transported to client'''
-    def __init__(self, id):
-        self._id = id
+    def __init__(self, prime):
+        self._prime_id = id(prime)
         self._client = None
     def attach_to_client(self, client):
         self._client = client
     @property
     def prime_id(self):
-        return self._id
+        return self._prime_id
     @property
     def client(self):
         return self._client
@@ -153,6 +153,46 @@ class Delegate(object):
     def get_prime(self, prime_id):
         return self._server.get_prime(prime_id)
 
+class FuncDelegate(Delegate):
+    def _transport(self, x):
+        if isinstance(x, Proxy):
+            return RemoteRef(x.prime_id)
+        else:
+            return x
+    def _resolve(self, x):
+        if isinstance(x, RemoteRef):
+            return self.get_prime(x.id)
+        else:
+            return x
+    def __init__(self, func, *args, **kwargs):
+        super(FuncDelegate, self).__init__()
+        self._func = self._transport(func)
+        self._args = map(self._transport, args)
+        self._kwargs = { k:self._transport(v) for k,v in kwargs.iteritems() }
+    def run_on_server(self):
+        func = self._resolve(self._func)
+        args = map(self._resolve, self._args)
+        kwargs = { k:self._resolve(v) for k,v in self._kwargs.iteritems() }
+        return func(*args, **kwargs)
+    def __str__(self):
+        funcname = getattr(self._func, '__name__', '<remote func>')
+        nargs = len(self._args) + len(self._kwargs)
+        return '<FuncDelegate: %s nargs=%d>' % (funcname, nargs)
+
+class ImportDelegate(Delegate):
+    def __init__(self, module_name, path):
+        self._module_name = module_name
+        self._path = path
+    def run_on_server(self):
+        # TODO: handle the case that the module is already loaded
+        fd, filename, info = imp.find_module(self._module_name, self._path)
+        try:
+            return imp.load_module(self._module_name, fd, filename, info)
+        finally:
+            if fd is not None:
+                fd.close()
+    def __str__(self):
+        return '<ImportDelegate: %s>' % (self._module_name)
 
 
 
@@ -160,8 +200,8 @@ class Delegate(object):
 class ObjectProxy(Proxy):
     '''A proxy for a server-side object.'''
     # To be run at server end:
-    def __init__(self, prime_id):
-        super(ObjectProxy,self).__init__(prime_id)
+    def __init__(self, prime):
+        super(ObjectProxy,self).__init__(prime)
 
     # TODO: use metaclass magic to omit these when the server does not support them:
 
@@ -241,66 +281,21 @@ class ObjectProxy(Proxy):
     # then the get/set/delitem overloads above will call them.
     
 class ExceptionProxy(Exception,Proxy):
-    def __init__(self, id):
+    def __init__(self, prime):
         print 'Creating an ExceptionProxy with id='+str(id)
-        Proxy.__init__(self, id)
+        Proxy.__init__(self, prime)
     def __reduce__(self):
-        return ExceptionProxy, (self._id,)
-
-class FuncDelegate(Delegate):
-    def _transport(self, x):
-        if isinstance(x, Proxy):
-            return RemoteRef(x.prime_id)
-        else:
-            return x
-    def _resolve(self, x):
-        if isinstance(x, RemoteRef):
-            return self.get_prime(x.id)
-        else:
-            return x
-    def __init__(self, func, *args, **kwargs):
-        super(FuncDelegate, self).__init__()
-        self._func = self._transport(func)
-        self._args = map(self._transport, args)
-        self._kwargs = { k:self._transport(v) for k,v in kwargs.iteritems() }
-    def run_on_server(self):
-        func = self._resolve(self._func)
-        args = map(self._resolve, self._args)
-        kwargs = { k:self._resolve(v) for k,v in self._kwargs.iteritems() }
-        return func(*args, **kwargs)
-    def __str__(self):
-        funcname = getattr(self._func, '__name__', '<remote func>')
-        nargs = len(self._args) + len(self._kwargs)
-        return '<FuncDelegate: %s nargs=%d>' % (funcname, nargs)
-
-
-
+        return ExceptionProxy, (self.prime_id,)
 
 class FunctionProxy(Proxy):
     '''A proxy for a server-side function.'''
     # To be run at server end:
-    def __init__(self, id):
-        super(FunctionProxy,self).__init__(id)
+    def __init__(self, prime):
+        super(FunctionProxy,self).__init__(prime)
     # To be run at client end:
     def __call__(self, *args, **kwargs):
         return self.client.call(self, *args, **kwargs)
 
-
-
-class ImportDelegate(Delegate):
-    def __init__(self, module_name, path):
-        self._module_name = module_name
-        self._path = path
-    def run_on_server(self):
-        # TODO: handle the case that the module is already loaded
-        fd, filename, info = imp.find_module(self._module_name, self._path)
-        try:
-            return imp.load_module(self._module_name, fd, filename, info)
-        finally:
-            if fd is not None:
-                fd.close()
-    def __str__(self):
-        return '<ImportDelegate: %s>' % (self._module_name)
 
 
 
@@ -421,15 +416,15 @@ class Server(object):
 
         if isinstance(prime, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
             print '  wrapping as callable'
-            return FunctionProxy(id(prime))
+            return FunctionProxy(prime)
 
         elif isinstance(prime, (types.ModuleType)):
             print '  wrapping as module'
-            return ObjectProxy(id(prime))
+            return ObjectProxy(prime)
 
         elif isinstance(prime, (types.FileType)):
             print '  wrapping as file'
-            return ObjectProxy(id(prime))
+            return ObjectProxy(prime)
 
         elif isinstance(prime, type):
             print '  wrapping as type'
@@ -445,12 +440,12 @@ class Server(object):
                 # TODO: check that we can safely transport all standard exceptions
                 return prime
             else:
-                return ExceptionProxy(id(prime))
+                return ExceptionProxy(prime)
 
         elif type(prime).__module__ != '__builtin__':
             print '  wrapping as object'
             self._prime_by_id[id(prime)] = prime
-            return ObjectProxy(id(prime))
+            return ObjectProxy(prime)
 
         elif type(prime) in (int,float,bool) or isinstance(prime, basestring):
             print '  not wrapping scalar'
@@ -463,7 +458,7 @@ class Server(object):
 
         else:
             print '  wrapping as object'
-            return ObjectProxy(id(prime))
+            return ObjectProxy(prime)
 
 class ClientStateError(Exception):
     '''Indicates that a command was attempted on a client that was in
