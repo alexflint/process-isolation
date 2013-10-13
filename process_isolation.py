@@ -16,11 +16,11 @@ import traceback
 import inspect
 import operator
 
+# DONE
+# - Implement docstring copying
+
 # TODO
 # - Switch to the lower-level multiprocessing.Pipe in order to get access to the pickler object
-
-
-# - Implement docstring copying
 # - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
 # - Add an API to restart the server if it goes down
 #   - Make it possible to automatically restart the server?
@@ -65,6 +65,7 @@ import operator
 #   requirements if we use pickle for transporting proxies between
 #   client and server.
 
+sys.setrecursionlimit(100)
 
 # These attributes should never be overriden
 SPECIAL_ATTRIBUTES = [ 
@@ -76,6 +77,20 @@ SPECIAL_ATTRIBUTES = [
     ]
 
 
+
+class TerminateProcess(BaseException):
+    pass
+
+class ProcessTerminationError(Exception):
+    def __init__(self, signal_or_returncode):
+        self._signal_or_returncode = signal_or_returncode
+
+class ClientStateError(Exception):
+    '''Indicates that a command was attempted on a client that was in
+    a state other than READY.'''
+    def __init__(self, msg):
+        super(self,ClientStateError).__init__(msg)
+
 # Produce a representation using the default repr() regardless of
 # whether the object provides an implementation of its own
 def raw_repr(obj):
@@ -84,11 +99,17 @@ def raw_repr(obj):
     else:
         return repr(obj)
 
-class TerminateProcess(BaseException):
-    pass
-
 def _raise_terminate():
     raise TerminateProcess()
+
+def _do_import(module_name, path):
+    # TODO: handle the case that the module is already loaded
+    fd, filename, info = imp.find_module(module_name, path)
+    try:
+        return imp.load_module(module_name, fd, filename, info)
+    finally:
+        if fd is not None:
+            fd.close()
 
 class ChildProcessSignalHandler(object):
     '''Helper to catch SIGCHLD signals and dispatch them.'''
@@ -134,8 +155,9 @@ class RemoteRef(object):
 
 class Proxy(object):
     '''Represents a proxy constructed at server and transported to client'''
-    def __init__(self, prime):
-        self._prime_id = id(prime)
+    def __init__(self, prime_id):
+        assert type(prime_id) is int
+        self._prime_id = prime_id
         self._client = None
     def attach_to_client(self, client):
         self._client = client
@@ -150,8 +172,9 @@ class Delegate(object):
     '''Represents a delegate constructed at client and transported to server.'''
     def attach_to_server(self, server):
         self._server = server
-    def get_prime(self, prime_id):
-        return self._server.get_prime(prime_id)
+    @property
+    def server(self):
+        return self._server
 
 class FuncDelegate(Delegate):
     def _transport(self, x):
@@ -161,7 +184,7 @@ class FuncDelegate(Delegate):
             return x
     def _resolve(self, x):
         if isinstance(x, RemoteRef):
-            return self.get_prime(x.id)
+            return self.server.get_prime(x.id)
         else:
             return x
     def __init__(self, func, *args, **kwargs):
@@ -179,45 +202,29 @@ class FuncDelegate(Delegate):
         nargs = len(self._args) + len(self._kwargs)
         return '<FuncDelegate: %s nargs=%d>' % (funcname, nargs)
 
-class ImportDelegate(Delegate):
-    def __init__(self, module_name, path):
-        self._module_name = module_name
-        self._path = path
-    def run_on_server(self):
-        # TODO: handle the case that the module is already loaded
-        fd, filename, info = imp.find_module(self._module_name, self._path)
-        try:
-            return imp.load_module(self._module_name, fd, filename, info)
-        finally:
-            if fd is not None:
-                fd.close()
-    def __str__(self):
-        return '<ImportDelegate: %s>' % (self._module_name)
-
-
-
-
 class ObjectProxy(Proxy):
     '''A proxy for a server-side object.'''
     # To be run at server end:
     def __init__(self, prime):
-        super(ObjectProxy,self).__init__(prime)
+        super(ObjectProxy,self).__init__(id(prime))
+        if hasattr(prime, '__doc__'):
+            self.__doc__ = prime.__doc__
 
-    # TODO: use metaclass magic to omit these when the server does not support them:
+    # TODO: use a metaclass to omit these when the server does not support them:
 
     # Implement object-like special methods
     def __getattr__(self, attrname):
-        if attrname in ['_id', '_client'] or attrname.startswith('__'):
-            return super(ObjectProxy,self).__getattribute__(attrname)
+        if attrname in ['_prime_id', '_client'] or attrname.startswith('__'):
+            return super(ObjectProxy,self).__getattr__(attrname)
         else:
             return self.client.call(getattr, self, attrname)
     def __setattr__(self, attrname, val):
-        if attrname in ['_id', '_client'] or attrname.startswith('__'):
+        if attrname in ['_prime_id', '_client'] or attrname.startswith('__'):
             return super(ObjectProxy,self).__setattr__(attrname, val)
         else:
             return self.client.call(setattr, self, attrname, val)
     def __delattr__(self, attrname):
-        if attrname in ['_id', '_client']:
+        if attrname in ['_prime_id', '_client']:
             return super(ObjectProxy,self).__detattr__(attrname)
         else:
             return self.client.call(gelattr, self, attrname)
@@ -283,7 +290,9 @@ class ObjectProxy(Proxy):
 class ExceptionProxy(Exception,Proxy):
     def __init__(self, prime):
         print 'Creating an ExceptionProxy with id='+str(id)
-        Proxy.__init__(self, prime)
+        Proxy.__init__(self, id(prime))
+        if hasattr(prime, '__doc__'):
+            self.__doc__ = prime.__doc__
     def __reduce__(self):
         return ExceptionProxy, (self.prime_id,)
 
@@ -291,7 +300,10 @@ class FunctionProxy(Proxy):
     '''A proxy for a server-side function.'''
     # To be run at server end:
     def __init__(self, prime):
-        super(FunctionProxy,self).__init__(prime)
+        super(FunctionProxy,self).__init__(id(prime))
+        if hasattr(prime, '__doc__'):
+            self.__doc__ = prime.__doc__
+
     # To be run at client end:
     def __call__(self, *args, **kwargs):
         return self.client.call(self, *args, **kwargs)
@@ -308,9 +320,6 @@ class ExceptionalResult(object):
         return '<ExceptionalResult [%s]>' % str(self.exception)
 
 
-class ProcessTerminationError(Exception):
-    def __init__(self, signal_or_returncode):
-        self._signal_or_returncode = signal_or_returncode
 
 
 class TypeProxyBlueprint(object):
@@ -322,6 +331,8 @@ class TypeProxyBlueprint(object):
         self._name = prime_class.__name__
         self._module = prime_class.__module__
         self._class_id = id(prime_class)
+        if hasattr(prime_class, '__doc__'):
+            self._doc = prime_class.__doc__
 
 class TypeProxy(type,Proxy):
     def attach_to_client(proxyclass, client):
@@ -336,15 +347,16 @@ class TypeProxy(type,Proxy):
     def __init__(proxyclass, blueprint):
         print 'TypeProxy.__init__ was called'
         Proxy.__init__(proxyclass, blueprint._class_id)
+        proxyclass._client = None
+        proxyclass.__new__ = TypeProxy._new_instance
+        if hasattr(blueprint, '_doc'):
+            proxyclass.__doc__ = blueprint._doc
 
     def __new__(metaclass, blueprint):
         # TODO: find or create proxies for the base classes of prime_class
         proxyname = blueprint._name
         proxybases = (object,)
-        proxymembers = {
-            '__new__': TypeProxy._new_instance,
-            '_client': None,
-            }
+        proxymembers = dict()
         return type.__new__(metaclass, proxyname, proxybases, proxymembers)
 
 
@@ -407,6 +419,7 @@ class Server(object):
             return self._proxy_by_id[id(prime)]
         else:
             proxy = self.wrap_impl(prime)
+            print 'nserver storing a proxy for prime_id=%d' % id(prime)
             self._prime_by_id[id(prime)] = prime
             self._proxy_by_id[id(prime)] = proxy
             return proxy
@@ -444,10 +457,9 @@ class Server(object):
 
         elif type(prime).__module__ != '__builtin__':
             print '  wrapping as object'
-            self._prime_by_id[id(prime)] = prime
             return ObjectProxy(prime)
 
-        elif type(prime) in (int,float,bool) or isinstance(prime, basestring):
+        elif type(prime) in (int,long,float,bool) or isinstance(prime, basestring):
             print '  not wrapping scalar'
             return prime
 
@@ -459,12 +471,6 @@ class Server(object):
         else:
             print '  wrapping as object'
             return ObjectProxy(prime)
-
-class ClientStateError(Exception):
-    '''Indicates that a command was attempted on a client that was in
-    a state other than READY.'''
-    def __init__(self, state):
-        self._state = state
 
 
 class Client(object):
@@ -576,7 +582,7 @@ class Client(object):
             raise ProcessTerminationError(self._server_process._popen.returncode)
 
         elif self.state != 'READY':
-            raise ServerStateError(self.state)
+            raise ClientStateError('execute() called while state='+self.state)
 
         # Dispatch the delegate
         # TODO: can the queue itself throw exceptions?
@@ -619,9 +625,9 @@ class Client(object):
     def terminate(self):
         print 'client.terminate() called (state=%s)' % self.state
         if self.state == 'WAITING_FOR_RESULT':
-            raise ClientStateError(self.state)
+            raise ClientStateError('terimate() called while state='+self.state)
         if self.state == 'TERMINATING':
-            raise ClientStateError(self.state)
+            raise ClientStateError('terimate() called while state='+self.state)
         elif self.state in ('TERMINATED_CLEANLY', 'TERMINATED_WITH_ERROR', 'TERMINATED_ASYNC'):
             assert not self._server_process.is_alive()
             return
@@ -683,7 +689,7 @@ class IsolationContext(object):
     def import_isolated(self, module_name):
         '''Import a module into this isolation context and return a proxy for it.'''
         self.ensure_started()
-        return self.client.execute(ImportDelegate(module_name, sys.path))
+        return self.client.call(_do_import, module_name, sys.path)
 
 
 

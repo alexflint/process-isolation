@@ -111,7 +111,15 @@ class ObjectWithCall(Unpicklable):
     def __call__(self, *args):
         return args[::-1]
 
-
 class ObjectWithDir(Unpicklable):
     def __dir__(self):
         return ['foo','bar']
+
+def documented_func():
+    '''foobar'''
+    pass
+
+class DocumentedClass(object):
+    '''baz'''
+    pass
+

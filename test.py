@@ -113,19 +113,22 @@ class TestProcessIsolation(unittest.TestCase):
         obj = self.mod.ObjectWithDir()
         self.assertItemsEqual(dir(obj), ['foo','bar'])
 
+    def test_docs(self):
+        self.assertEqual(self.mod.DocumentedClass.__doc__, 'baz')
+        self.assertEqual(self.mod.documented_func.__doc__, 'foobar')
 
-
-    def test_custom_exception(self):
+    def _test_custom_exception(self):
         exception_type = self.mod.CustomException
         try:
             self.mod.raise_custom_exception()
-        except:
-            ex = sys.exc_value
+        except Exception as ex:
             print 'Unittest caught an exception:'+str(ex)
             print 'isinstance?'
             print isinstance(ex, exception_type)
             print 'instancecheck?'
             print exception_type.__instancecheck__(ex)
+            sys.exc_clear()
+
 
 
 if __name__ == '__main__':
