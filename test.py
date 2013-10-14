@@ -2,7 +2,7 @@ from process_isolation import *
 import unittest
 import time
 
-class IsolatedModuleTestCase(unittest.TestCase):
+class ProxyTest(unittest.TestCase):
     def setUp(self):
         print '\n\nRunning test case: %s\n' % self.id()
         self.ctx = IsolationContext()
@@ -49,9 +49,6 @@ class IsolatedModuleTestCase(unittest.TestCase):
         print '\n-> Comparing identity (%d vs %d)...' % (id(obj), id(obj2))
         self.assertTrue(obj is obj2)
 
-    def test_remote_crash(self):
-        self.assertRaises(ProcessTerminationError, self.mod.hard_abort)
-
     def test_standard_exception(self):
         self.assertRaisesRegexp(Exception, 'foobar', self.mod.raise_standard_exception)
 
@@ -68,7 +65,6 @@ class IsolatedModuleTestCase(unittest.TestCase):
         obj = self.mod.make_instance()
         assert isinstance(obj, self.mod.SomeClass)
         assert isinstance(obj, self.mod.SomeBase)
-
 
     def test_sequence_special_funcs(self):
         a = self.mod.ObjectWithItems(10)
@@ -131,7 +127,7 @@ class IsolatedModuleTestCase(unittest.TestCase):
             sys.exc_clear()
 
 
-class ImportTestCase(unittest.TestCase):
+class ImportTest(unittest.TestCase):
     def test_load_twice(self):
         self.mod = load_module('somemodule')
         self.mod2 = load_module('somemodule')
@@ -147,6 +143,25 @@ class ImportTestCase(unittest.TestCase):
         import somemodule
         assert somemodule is self.mod
         
+
+class LifecycleTest(unittest.TestCase):
+    def test_remote_crash(self):
+        mod = load_module('somemodule')
+        self.assertRaises(ProcessTerminationError, mod.hard_abort)
+
+    def test_method_call_after_remote_crash(self):
+        mod = load_module('somemodule')
+        mod.hard_abort()
+        self.assertRaises(ProcessTerminationError, self.mod.foo)
+        
+    def test_restart(self):
+        self.asserEqual(self.mod.foo(), 1)
+        self.asserEqual(self.mod.foo(), 2)
+        self.asserEqual(self.mod.foo(), 3)
+        self.mod.__isolation_context__.restart()
+        self.asserEqual(self.mod.foo(), 1)
+
+    
 
 
 if __name__ == '__main__':

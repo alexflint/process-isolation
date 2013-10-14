@@ -792,10 +792,10 @@ class IsolationContext(object):
     @property
     def client(self):
         '''Get the client object that communicates with the isolation
-        host, or None if start_subprocess has not yet been called.'''
+        host, or None if start has not yet been called.'''
         return self._client
 
-    def start_subprocess(self):
+    def start(self):
         '''Create a process in which the isolated code will be run.'''
         assert self._client is None
 
@@ -811,15 +811,26 @@ class IsolationContext(object):
         # Create a client to talk to the server
         self._client = Client(server_process, request_queue, response_queue)
 
+    def restart(self):
+        if self._client is not None:
+            # It is always safe to call cleanup no matter what state the client is in
+            self._client.cleanup()
+            self._client = None
+        self.start()
+
     def ensure_started(self):
         '''If the subprocess for this isolation context has not been created then create it.'''
         if self._client is None:
-            self.start_subprocess()
+            self.start()
 
     def load_module(self, module_name):
         '''Import a module into this isolation context and return a proxy for it.'''
         self.ensure_started()
-        return self.client.call(_load_module, module_name, sys.path)
+        mod = self.client.call(_load_module, module_name, sys.path)
+        mod.__isolation_context__ = self
+        return mod
+
+        
 
 
 

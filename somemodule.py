@@ -2,9 +2,15 @@ import os
 
 x = 55
 y = 20
+n = 0
 
 def foo():
     return 2
+
+def count_calls():
+    n += 1
+    return n
+    
 
 def bar(a, b):
     return a+b*100
