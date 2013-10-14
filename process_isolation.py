@@ -19,6 +19,7 @@ import threading
 
 # DONE
 # - Implement docstring copying
+# - Add the module to local sys.modules so that it doesn't get loaded by some other module
 
 # TODO
 # - Copy docstrings for each method within proxied classes
@@ -27,7 +28,6 @@ import threading
 # - Add an API to restart the server if it goes down
 #   - Make it possible to automatically restart the server?
 # - Implement reload(mymodule)
-# - Add the module to local sys.moduels so that it doesn't get loaded by some other module
 # - Migrate objects between client and server?
 # - Multiple separately isolated processes
 # - Deal with extra-special funtions like __getattribute__, __class__, etc
@@ -104,7 +104,7 @@ def raw_repr(obj):
 def _raise_terminate():
     raise TerminateProcess()
 
-def _do_import(module_name, path):
+def _load_module(module_name, path):
     # TODO: handle the case that the module is already loaded
     fd, filename, info = imp.find_module(module_name, path)
     try:
@@ -816,10 +816,10 @@ class IsolationContext(object):
         if self._client is None:
             self.start_subprocess()
 
-    def import_isolated(self, module_name):
+    def load_module(self, module_name):
         '''Import a module into this isolation context and return a proxy for it.'''
         self.ensure_started()
-        return self.client.call(_do_import, module_name, sys.path)
+        return self.client.call(_load_module, module_name, sys.path)
 
 
 
@@ -829,5 +829,16 @@ def default_context():
         default_context._instance = IsolationContext()
     return default_context._instance
 
-def import_isolated(module_name):
-    return default_context().import_isolated(module_name)
+def load_module(module_name):
+    '''Import a module into the default isolated context and return a
+    reference to it. This does not import the module into sys.modules
+    and it does not have any of the other effects of python's "import
+    foo" syntax.'''
+    return default_context().load_module(module_name)
+
+def import_isolated(module_name, fromlist=[], level=-1):
+    '''Import an module into an isolated context as if with
+    "__import__('module_name')"'''
+    mod = load_module(module_name)
+    sys.modules['module_name'] = mod
+    return __import__(module_name, fromlist=fromlist, level=level)

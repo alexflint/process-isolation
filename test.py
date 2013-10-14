@@ -2,11 +2,11 @@ from process_isolation import *
 import unittest
 import time
 
-class TestProcessIsolation(unittest.TestCase):
+class IsolatedModuleTestCase(unittest.TestCase):
     def setUp(self):
         print '\n\nRunning test case: %s\n' % self.id()
         self.ctx = IsolationContext()
-        self.mod = self.ctx.import_isolated('somemodule')
+        self.mod = self.ctx.load_module('somemodule')
 
     def _tearDown(self):
         del self.mod
@@ -130,6 +130,23 @@ class TestProcessIsolation(unittest.TestCase):
             print exception_type.__instancecheck__(ex)
             sys.exc_clear()
 
+
+class ImportTestCase(unittest.TestCase):
+    def test_load_twice(self):
+        self.mod = load_module('somemodule')
+        self.mod2 = load_module('somemodule')
+        assert self.mod is self.mod2
+
+    def test_import_twice(self):
+        self.mod = import_isolated('somemodule')
+        self.mod2 = import_isolated('somemodule')
+        assert self.mod is self.mod2
+
+    def test_import_then_system_import(self):
+        self.mod = import_isolated('somemodule')
+        import somemodule
+        assert somemodule is self.mod
+        
 
 
 if __name__ == '__main__':
