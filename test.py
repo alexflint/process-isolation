@@ -1,5 +1,6 @@
 from process_isolation import *
 import unittest
+import time
 
 class TestProcessIsolation(unittest.TestCase):
     def setUp(self):
@@ -7,9 +8,9 @@ class TestProcessIsolation(unittest.TestCase):
         self.ctx = IsolationContext()
         self.mod = self.ctx.import_isolated('somemodule')
 
-    def tearDown(self):
+    def _tearDown(self):
         del self.mod
-        self.ctx.client.terminate()
+        self.ctx.client.cleanup()
 
     def test_var(self):
         self.assertEqual(self.mod.x, 55)
@@ -81,9 +82,9 @@ class TestProcessIsolation(unittest.TestCase):
         del a[-3:]
         self.assertEqual(len(a), 6)        
 
-    def _test_sequence_iter(self):
+    def test_iterator(self):
         a = self.mod.ObjectWithItems(5)
-        self.assertEqual(a, list(iter(a)))
+        self.assertItemsEqual(a, list(iter(a)))
         
     def test_str_special_funcs(self):
         obj = self.mod.ObjectWithStr()

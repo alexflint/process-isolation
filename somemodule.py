@@ -86,6 +86,8 @@ class ObjectWithItems(Unpicklable):
     def __delitem__(self, i):
         print 'Object with items got delitem: '+str(i)
         del self._a[i]
+    def __iter__(self):
+        return iter(self._a)
 
 class ObjectWithStr(Unpicklable):
     def __str__(self):

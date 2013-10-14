@@ -15,11 +15,13 @@ import Queue
 import traceback
 import inspect
 import operator
+import threading
 
 # DONE
 # - Implement docstring copying
 
 # TODO
+# - Copy docstrings for each method within proxied classes
 # - Switch to the lower-level multiprocessing.Pipe in order to get access to the pickler object
 # - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
 # - Add an API to restart the server if it goes down
@@ -89,7 +91,7 @@ class ClientStateError(Exception):
     '''Indicates that a command was attempted on a client that was in
     a state other than READY.'''
     def __init__(self, msg):
-        super(self,ClientStateError).__init__(msg)
+        Exception.__init__(self, msg)
 
 # Produce a representation using the default repr() regardless of
 # whether the object provides an implementation of its own
@@ -116,24 +118,69 @@ class ChildProcessSignalHandler(object):
     _listeners = {}
     _processes = {}
     _installed = False
+    _signal_recieved = False
+    _mutex = threading.Lock()  # we're not doing any multithreading
+                               # here but we need this to prevent
+                               # signal-related race conditions
 
     @classmethod
     def register_listener(cls, process, listener):
         cls._install()
         cls._processes[process.pid] = process
-        cls._listeners.setdefault(process.pid,[]).append(listener)
+
+        # Make sure that the update to the listeners dictionary is
+        # atomic in case we get a signal while attempting to update
+        updated_listeners = dict(cls._listeners)
+        updated_listeners.setdefault(process.pid,[]).append(listener)
+        cls._listeners = updated_listeners
 
     @classmethod
     def _handle_sigchld(cls, signum, stackframe):
-        pids_to_remove = []
-        for pid,listeners in cls._listeners.iteritems():
-            if not cls._processes[pid].is_alive():
-                pids_to_remove.append(pid)
-                for listener in listeners:
-                    listener()
-        for pid in pids_to_remove:
-            del cls._processes[pid]
-            del cls._listeners[pid]
+        print 'ChildProcessSignalHandler recieved SIGCHLD'
+        # Note that when handling signals in python, this signal
+        # handler is called out-of-line relative to other code, and
+        # may itself be interrupted by any further signals. We should
+        # never block on a mutex because that will deadlock
+        # immediately, but we must non-blocking mutexes in certain
+        # places to ensure that we are race-condition free
+
+        # I'm not certain that it's even possible to cover all the
+        # race conditions in python. The worst that can happen here is
+        # that we fail to notify about a child process that did in
+        # fact terminate
+
+        if cls._mutex.acquire(False):
+            print 'ChildProcessSignalHandler acquired lock'
+            # We got the lock, we are reponsible for dispatching
+            # listeners until we complete an iteration without
+            # recieving any signals
+            _signal_recieved = True
+
+            while _signal_recieved:
+                _signal_recieved = False
+                pids_to_remove = []
+                for pid,listeners in cls._listeners.iteritems():
+                    if not cls._processes[pid].is_alive():
+                        pids_to_remove.append(pid)
+                        for listener in listeners:
+                            print 'ChildProcessSignalHandler calling a listener'
+                            listener()
+
+                # Must happen here and not outside the "while" or we will call some listeners multiple times
+                for pid in pids_to_remove:
+                    del cls._processes[pid]
+                    del cls._listeners[pid]
+
+            # Release the mutex
+            cls._mutex.release()
+
+        else:
+            print 'ChildProcessSignalHandler did not acquire lock'
+            # There is another signal handler currently dispatching
+            # signals so set the flag and leave the dispatching to
+            # that handler.
+            _signal_recieved = True
+
 
     @classmethod
     def _install(cls):
@@ -276,6 +323,9 @@ class ObjectProxy(Proxy):
         return self.client.call(operator.contains, self, val)
     def __iter__(self):
         return self.client.call(iter, self)
+    # TODO: move this to a subclass that only gets used for iterators
+    def next(self):
+        return self.client.call(next, self)
 
     # Implement misc special methods
     def __hash__(self, other):
@@ -412,14 +462,14 @@ class Server(object):
             print 'server putting %s onto result queue' % raw_repr(result)
             self._result_channel.put(result)
 
-        print 'Server loop ended'
+        print 'server[%d] loop ended' % os.getpid()
 
     def wrap(self, prime):
         if id(prime) in self._proxy_by_id:
             return self._proxy_by_id[id(prime)]
         else:
             proxy = self.wrap_impl(prime)
-            print 'nserver storing a proxy for prime_id=%d' % id(prime)
+            print 'server created a proxy for prime_id=%d (will cache both prime and proxy)' % id(prime)
             self._prime_by_id[id(prime)] = prime
             self._proxy_by_id[id(prime)] = proxy
             return proxy
@@ -472,6 +522,28 @@ class Server(object):
             print '  wrapping as object'
             return ObjectProxy(prime)
 
+class ChannelError(Exception):
+    def __init__(self, msg):
+        Exception.__init__(self, msg)
+
+def read_channel(channel, num_retries):
+    for i in range(num_retries):
+        try:
+            return channel.get()
+        except IOError as ex:
+            if ex.errno == 4:
+                # This errno corresponds to "System call interrupted",
+                # which means a signal was recieved before any data
+                # was sent. For now I think it's safe to ignore this
+                # and continue.
+                print 'attempt to read from channel was interrupted by something'
+                print ex
+            else:
+                # Something else went wrong - raise the exception as usual
+                raise ex
+
+    raise ChannelError('failed to read from channel after %d retries' % num_retries)
+
 
 class Client(object):
     '''Represents a client that sends delegates and listens for results.'''
@@ -482,6 +554,7 @@ class Client(object):
         self._server_process = server_process
         self._state = 'READY'
         self._proxy_by_id = dict()
+        self._sigchld_count = 0
         atexit.register(self._on_exit)
         ChildProcessSignalHandler.register_listener(server_process, self._on_sigchld)
 
@@ -513,6 +586,8 @@ class Client(object):
         # so it should be thought of as asynchronous with respect to
         # other code
 
+        self._sigchld_count += 1
+
         # If this client is currently waiting for a result then unwind
         # the stack up to the appropriate point. Otherwise, the
         # process is_alive() flag will be checked next time execute()
@@ -527,15 +602,40 @@ class Client(object):
             self.state = 'TERMINATED_ASYNC'
 
         elif self.state == 'TERMINATING':
-            # If we just asked the server to terminate then don't throw an
-            # exception.
+            # We just asked the server to terminate and it did so.
+            # This case comes up if SIGCHLD arrives before terminate()
+            # gets a chance to change self.state. Either way, we're
+            # fine.
             pass
 
-        else:
-            # In this case we had already terminated and we recieved another signal
-            # This is very strange!
-            print 'Unknown situation: Recieved SIGCHLD when client state=%s. Ignoring.' % self.state
+        elif self.state == 'TERMINATED_CLEANLY':
+            # We just asked the server to terminate and it did so.
+            # This case comes up if SIGCHLD arrives after terminate()
+            # changes self.state. Either way, we're fine.
             pass
+
+        elif self.state == 'TERMINATED_WITH_ERROR':
+            # This should not come up because the only way we can get
+            # to this state is if we execute something that crashes
+            # the server, which causes SIGCHLD in state
+            # 'WAITING_FOR_RESULT', which throws
+            # ProcessTerminationError, which is caught in self.execute()
+
+            # Update: It seems that it's possible to get multiple SIGCHLD signals!
+            raise ClientStateError('Recieved SIGCHLD when client state=%s, n=%d. This should not happen!' % \
+                                       (self.state, self._sigchld_count))
+
+        elif self.state == 'TERMINATED_ASYNC':
+            # This should not come up because the only way we can get
+            # to TERMINATED_ASYNC is if we recieved a previous
+            # SIGCHLD, and we should only ever get one SIGCHLD per
+            # child process.
+            raise ClientStateError('Recieved SIGCHLD when client state=%s, n=%d. This should not happen!' % \
+                                       (self.state, self._sigchld_count))
+
+        else:
+            # We are in an unknown state
+            raise ClientStateError('Recieved SIGCHLD when client state=%s (which is an unknown state)' % self.state)
 
         # Always "join" the process so that the OS can clean it up and free its memory
         # TODO: handle timeouts here
@@ -543,15 +643,7 @@ class Client(object):
         self._server_process.join()
 
     def _on_exit(self):
-        if self._server_process.is_alive():
-            try:
-                self.terminate()
-            except ProcessTerminationError as ex:
-                # Terminate can throw a ProcessTerminationError if the
-                # process terminated at some point between the last
-                # execute() and the call to terminate()
-                # For now we just ignore this.
-                pass            
+        self.cleanup()
 
     def attach_proxy(self, proxy):
         if proxy.prime_id in self._proxy_by_id:
@@ -595,15 +687,17 @@ class Client(object):
             self._assert_alive()
             self.state = 'WAITING_FOR_RESULT'
             self._assert_alive()
-            result = self._result_channel.get()
+            result = read_channel(self._result_channel, num_retries=1)
             self._assert_alive()
-            self.state = 'READY'
         except ProcessTerminationError as ex:
             # Change state and re-raise
             self.state = 'TERMINATED_WITH_ERROR'
             raise ex
+        finally:
+            # In case some other exception is thrown by result_channel.get()...
+            self.state = 'READY'
 
-        print 'client got result: '+raw_repr(result)
+        print 'client recieved result: '+raw_repr(result)
 
         # Unpack any exception raised on the server side
         if isinstance(result, ExceptionalResult):
@@ -623,6 +717,7 @@ class Client(object):
         return result
 
     def terminate(self):
+        '''Stop the server process and change our state to TERMINATING. Only valid if state=READY.'''
         print 'client.terminate() called (state=%s)' % self.state
         if self.state == 'WAITING_FOR_RESULT':
             raise ClientStateError('terimate() called while state='+self.state)
@@ -647,7 +742,42 @@ class Client(object):
 
             # Wait for acknowledgement
             # TODO: can the result queue throw an exception?
-            result = self._result_channel.get()
+            try:
+                result = read_channel(self._result_channel, num_retries=5)
+            except ChannelError as ex:
+                # Was interrupted five times in a row! Ignore for now
+                print 'client failed to read sentinel from channel after 5 retries - will terminate anyway'
+
+            self.state = 'TERMINATED_CLEANLY'
+
+    def cleanup(self):
+        '''Terminate this client if it is not already terminated.'''
+        print 'cleanup() called while state is '+self.state
+        if self.state == 'WAITING_FOR_RESULT':
+            # There is an ongoing call to execute()
+            # Not sure what to do here
+            print '  not sure what to do so doing nothing'
+            pass
+        elif self.state == 'TERMINATING':
+            # terminate() has been called but we have not recieved SIGCHLD yet
+            # Not sure what to do here
+            print '  not sure what to do so doing nothing'
+            pass
+        elif self.state in ('TERMINATED_CLEANLY', 'TERMINATED_WITH_ERROR', 'TERMINATED_ASYNC'):
+            # We have already terminated
+            # TODO: should we deal with TERMINATED_ASYNC in some special way?
+            print '  nothing needs to be done'
+            pass
+        else:
+            print '  attempting to terminate'
+            try:
+                self.terminate()
+            except ProcessTerminationError as ex:
+                # Terminate can throw a ProcessTerminationError if the
+                # process terminated at some point between the last
+                # execute() and the call to terminate()
+                # For now we just ignore this.
+                pass            
 
 
 class IsolationContext(object):
@@ -701,16 +831,3 @@ def default_context():
 
 def import_isolated(module_name):
     return default_context().import_isolated(module_name)
-
-
-
-
-
-
-
-
-
-
-
-
-
