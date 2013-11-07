@@ -8,6 +8,7 @@ def foo():
     return 2
 
 def count_calls():
+    global n
     n += 1
     return n
     
@@ -129,5 +130,7 @@ def documented_func():
 
 class DocumentedClass(object):
     '''baz'''
-    pass
+    def documented_member(self):
+        '''some documentation here'''
+        pass
 

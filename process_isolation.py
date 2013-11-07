@@ -22,6 +22,7 @@ import threading
 # - Add the module to local sys.modules so that it doesn't get loaded by some other module
 
 # TODO
+# - In Client.call, check that all RemoteRefs live in the remote host matching the current client
 # - Copy docstrings for each method within proxied classes
 # - Switch to the lower-level multiprocessing.Pipe in order to get access to the pickler object
 # - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
@@ -67,6 +68,7 @@ import threading
 #   requirements if we use pickle for transporting proxies between
 #   client and server.
 
+# TEMP DEBUG:
 sys.setrecursionlimit(100)
 
 # These attributes should never be overriden
@@ -81,25 +83,43 @@ SPECIAL_ATTRIBUTES = [
 
 
 class TerminateProcess(BaseException):
+    '''This exception is raised within the host to request a graceful
+    termination.'''
     pass
 
 class ProcessTerminationError(Exception):
+    '''Indicates that the host process crashed while processing a command.'''
     def __init__(self, signal_or_returncode):
+        Exception.__init__('Isolation host terminated with signal or returncode '+str(signal_or_returncode))
         self._signal_or_returncode = signal_or_returncode
 
 class ClientStateError(Exception):
-    '''Indicates that a command was attempted on a client that was in
+    '''Indicates that a command was attempted when a client that was in
     a state other than READY.'''
     def __init__(self, msg):
         Exception.__init__(self, msg)
 
-# Produce a representation using the default repr() regardless of
-# whether the object provides an implementation of its own
+class ChannelError(Exception):
+    '''The client was repeatedly interrupted when trying to read data
+    from the isolation host.'''
+    def __init__(self, msg):
+        Exception.__init__(self, msg)
+
+
+def isproxy(x):
+    '''Determine whether x is a proxy. Since proxies are designed to
+    by as transparent as possible, they override __subclasscheck__, so
+    we cannot use isinstance here.'''
+    return Proxy in inspect.getmro(type(x))
+
 def raw_repr(obj):
-    if isinstance(obj, Proxy):
+    '''Produce a representation using the default repr() regardless of
+    whether the object provides an implementation of its own.'''
+    if isproxy(obj):
         return '<%s with prime_id=%d>' % (obj.__class__.__name__, obj.prime_id)
     else:
         return repr(obj)
+
 
 def _raise_terminate():
     raise TerminateProcess()
@@ -112,6 +132,23 @@ def _load_module(module_name, path):
     finally:
         if fd is not None:
             fd.close()
+
+def read_channel(channel, num_retries):
+    for i in range(num_retries):
+        try:
+            return channel.get()
+        except IOError as ex:
+            if ex.errno == 4:
+                # This errno corresponds to "System call interrupted",
+                # which means a signal was recieved before any data
+                # was sent. For now I think it's safe to ignore this
+                # and continue.
+                print 'attempt to read from channel was interrupted by something'
+                print ex
+            else:
+                # Something else went wrong - raise the exception as usual
+                raise ex
+    raise ChannelError('failed to read from channel after %d retries' % num_retries)
 
 class ChildProcessSignalHandler(object):
     '''Helper to catch SIGCHLD signals and dispatch them.'''
@@ -188,6 +225,7 @@ class ChildProcessSignalHandler(object):
             cls._installed = True
             signal.signal(signal.SIGCHLD, cls._handle_sigchld)
 
+ChildProcessSignalHandler._install()
 
 
 
@@ -248,6 +286,17 @@ class FuncDelegate(Delegate):
         funcname = getattr(self._func, '__name__', '<remote func>')
         nargs = len(self._args) + len(self._kwargs)
         return '<FuncDelegate: %s nargs=%d>' % (funcname, nargs)
+
+class ByValueDelegate(Delegate):
+    def __init__(self, proxy):
+        assert isinstance(proxy, Proxy)
+        self._prime_id = proxy.prime_id
+    def run_on_server(self):
+        return ByValue(self.server.get_prime(self._prime_id))
+
+def byvalue(proxy):
+    assert isinstance(proxy, Proxy)
+    return proxy.client.execute(ByValueDelegate(proxy))
 
 class ObjectProxy(Proxy):
     '''A proxy for a server-side object.'''
@@ -410,6 +459,19 @@ class TypeProxy(type,Proxy):
         return type.__new__(metaclass, proxyname, proxybases, proxymembers)
 
 
+class ByValue(object):
+    '''A container used by delegates to indicate to the object
+    transport mechanism that the value contained within should be
+    returned to the client by value.'''
+    def __init__(self, value):
+        self.value = value
+
+class ByProxy(object):
+    '''A container used by delegates to indicate to the object
+    transport mechanism that the value contained within should be
+    returned to the client by proxy.'''
+    def __init__(self, value):
+        self.value = value
 
 
 class Server(object):
@@ -430,7 +492,7 @@ class Server(object):
         return self._proxy_by_id[prime_id]
 
     def loop(self):
-        print 'server[%d] starting' % os.getpid()
+        print 'server[%d] loop() starting' % os.getpid()
         terminate_flag = False
         while not terminate_flag:
             # Get the next delegate
@@ -469,13 +531,21 @@ class Server(object):
             return self._proxy_by_id[id(prime)]
         else:
             proxy = self.wrap_impl(prime)
-            print 'server created a proxy for prime_id=%d (will cache both prime and proxy)' % id(prime)
-            self._prime_by_id[id(prime)] = prime
-            self._proxy_by_id[id(prime)] = proxy
-            return proxy
+            if proxy is None:
+                # indicates that this object should be returned by value: do not cache
+                return prime
+            else:
+                print 'server created a proxy for prime_id=%d (will cache both prime and proxy)' % id(prime)
+                self._prime_by_id[id(prime)] = prime
+                self._proxy_by_id[id(prime)] = proxy
+                return proxy
 
     def wrap_impl(self, prime):
         print 'wrapping %s (id=%d)' % (str(prime), id(prime))
+
+        if isinstance(prime, ByValue):
+            # this indicates that the standard object proxying semantics are being overridden
+            return prime.value
 
         if isinstance(prime, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
             print '  wrapping as callable'
@@ -501,7 +571,7 @@ class Server(object):
             print '  wrapping as exception'
             if type(prime).__module__ in ('exceptions', '__builtin__'):
                 # TODO: check that we can safely transport all standard exceptions
-                return prime
+                return None  # indicates that we should return this object by value
             else:
                 return ExceptionProxy(prime)
 
@@ -511,38 +581,16 @@ class Server(object):
 
         elif type(prime) in (int,long,float,bool) or isinstance(prime, basestring):
             print '  not wrapping scalar'
-            return prime
+            return None  # indicates that we should return this object by value
 
         # TEMP HACK
         elif operator.isSequenceType(prime):
             print '  not wrapping sequence'
-            return prime
+            return None  # indicates that we should return this object by value
 
         else:
             print '  wrapping as object'
             return ObjectProxy(prime)
-
-class ChannelError(Exception):
-    def __init__(self, msg):
-        Exception.__init__(self, msg)
-
-def read_channel(channel, num_retries):
-    for i in range(num_retries):
-        try:
-            return channel.get()
-        except IOError as ex:
-            if ex.errno == 4:
-                # This errno corresponds to "System call interrupted",
-                # which means a signal was recieved before any data
-                # was sent. For now I think it's safe to ignore this
-                # and continue.
-                print 'attempt to read from channel was interrupted by something'
-                print ex
-            else:
-                # Something else went wrong - raise the exception as usual
-                raise ex
-
-    raise ChannelError('failed to read from channel after %d retries' % num_retries)
 
 
 class Client(object):
@@ -728,7 +776,6 @@ class Client(object):
             return
         elif self.state == 'READY':
             # Check that the process itself is still alive
-            print 'server process alive:',self._server_process.is_alive()
             self._assert_alive()
 
             # Make sure the SIGCHLD signal handler doesn't throw any exceptions
@@ -737,7 +784,6 @@ class Client(object):
             # Do not call execute() because that function will check
             # whether the process is alive and throw an exception if not
             # TODO: can the queue itself throw exceptions?
-            # TODO: it's walsy possible that the 
             self._delegate_channel.put(FuncDelegate(_raise_terminate))
 
             # Wait for acknowledgement
@@ -799,6 +845,8 @@ class IsolationContext(object):
         '''Create a process in which the isolated code will be run.'''
         assert self._client is None
 
+        print 'IsolationContext[%d] starting' % id(self)
+
         # Create the queues
         request_queue = multiprocessing.Queue()
         response_queue = multiprocessing.Queue()
@@ -812,6 +860,7 @@ class IsolationContext(object):
         self._client = Client(server_process, request_queue, response_queue)
 
     def restart(self):
+        print 'IsolationContext[%d] restarting' % id(self)
         if self._client is not None:
             # It is always safe to call cleanup no matter what state the client is in
             self._client.cleanup()
@@ -820,6 +869,7 @@ class IsolationContext(object):
 
     def ensure_started(self):
         '''If the subprocess for this isolation context has not been created then create it.'''
+        print 'IsolationContext[%d] ensure_started: client is None? %s' % (id(self), str(self._client is None))
         if self._client is None:
             self.start()
 

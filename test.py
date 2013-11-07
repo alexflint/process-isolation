@@ -1,6 +1,7 @@
 from process_isolation import *
 import unittest
 import time
+import inspect
 
 class ProxyTest(unittest.TestCase):
     def setUp(self):
@@ -50,7 +51,8 @@ class ProxyTest(unittest.TestCase):
         self.assertTrue(obj is obj2)
 
     def test_standard_exception(self):
-        self.assertRaisesRegexp(Exception, 'foobar', self.mod.raise_standard_exception)
+        with self.assertRaisesRegexp(Exception, 'foobar'):
+            self.mod.raise_standard_exception
 
     def test_two_copies_of_class(self):
         c1 = self.mod.SomeClass
@@ -111,8 +113,9 @@ class ProxyTest(unittest.TestCase):
         self.assertItemsEqual(dir(obj), ['foo','bar'])
 
     def test_docs(self):
-        self.assertEqual(self.mod.DocumentedClass.__doc__, 'baz')
         self.assertEqual(self.mod.documented_func.__doc__, 'foobar')
+        self.assertEqual(self.mod.DocumentedClass.__doc__, 'baz')
+        self.assertEqual(self.mod.DocumentedClass.documented_member.__doc__, 'some documentation here')
 
     def _test_custom_exception(self):
         exception_type = self.mod.CustomException
@@ -145,23 +148,50 @@ class ImportTest(unittest.TestCase):
         
 
 class LifecycleTest(unittest.TestCase):
+    def setUp(self):
+        self.ctx = IsolationContext()
+        self.mod = self.ctx.load_module('somemodule')
+
     def test_remote_crash(self):
-        mod = load_module('somemodule')
-        self.assertRaises(ProcessTerminationError, mod.hard_abort)
+        with self.assertRaises(ProcessTerminationError):
+            self.mod.hard_abort()
 
     def test_method_call_after_remote_crash(self):
-        mod = load_module('somemodule')
-        mod.hard_abort()
-        self.assertRaises(ProcessTerminationError, self.mod.foo)
-        
+        with self.assertRaises(ProcessTerminationError):
+            self.mod.hard_abort()
+        with self.assertRaises(ClientStateError):
+            self.mod.foo()
+
     def test_restart(self):
-        self.asserEqual(self.mod.foo(), 1)
-        self.asserEqual(self.mod.foo(), 2)
-        self.asserEqual(self.mod.foo(), 3)
-        self.mod.__isolation_context__.restart()
-        self.asserEqual(self.mod.foo(), 1)
+        self.assertEqual(self.mod.count_calls(), 1)
+
+        #print '\n\nunittest calling context.restart()...'
+        #self.ctx.restart()
+        #print '\n\nunittest calling count_calls() again...'
+        #self.assertEqual(self.mod.count_calls(), 1)
+
+        ctx2 = IsolationContext()
+        mod2 = ctx2.load_module('somemodule')
+        self.assertEqual(mod2.count_calls(), 1)
+
+    def test_foo(self):
+        self.mod.foo()
 
     
+class ByValueTest(unittest.TestCase):
+    def setUp(self):
+        self.ctx = IsolationContext()
+        self.mod = self.ctx.load_module('somemodule')
+    
+    def test_by_value(self):
+        x = self.mod.Woo()
+        self.assertTrue(isproxy(x))
+        y = byvalue(x)
+        self.assertFalse(isproxy(y))
+
+    def test_by_value_on_non_proxy(self):
+        with self.assertRaises(AssertionError):
+            byvalue(123)
 
 
 if __name__ == '__main__':
