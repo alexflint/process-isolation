@@ -75,7 +75,8 @@ def raise_standard_exception():
     raise Exception('foobar')
 
 class CustomException(Exception):
-    pass
+    def __str__(self):
+        return '<CustomException object>'
 
 def raise_custom_exception():
     print 'Raising CustomException now.'
@@ -134,3 +135,6 @@ class DocumentedClass(object):
         '''some documentation here'''
         pass
 
+class AddOneHundred(object):
+    def __call__(self, x):
+        return x + 100

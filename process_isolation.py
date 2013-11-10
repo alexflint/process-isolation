@@ -17,70 +17,10 @@ import inspect
 import operator
 import threading
 
-# DONE
-# - Implement docstring copying
-# - Add the module to local sys.modules so that it doesn't get loaded by some other module
-
-# TODO
-# - In Client.call, check that all RemoteRefs live in the remote host matching the current client
-# - Copy docstrings for each method within proxied classes
-# - Switch to the lower-level multiprocessing.Pipe in order to get access to the pickler object
-# - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
-# - Add an API to restart the server if it goes down
-#   - Make it possible to automatically restart the server?
-# - Implement reload(mymodule)
-# - Migrate objects between client and server?
-# - Multiple separately isolated processes
-# - Deal with extra-special funtions like __getattribute__, __class__, etc
-# - Replace __getattr__ with descriptors? And add __getattr__ only if the prime implements it?
-# - Avoid reloading modules on server side
-# - Make registry and proxy_by_id use weak references
-# - Wrap a module with a proxy that explicitly contains proxies for each member (for clarity)
-# - Deal with files
-# - Deal with generators
-# - Can all exceptions classes in 'exceptions' be safely copied?
-# - Deal with call to sys.exit() in child process
-# - Deal with modifications to global state
-# - Detect when cPickle fails to pickle an object and automatically proxy it instead
-# - Deal with objects that are sent to server and then modified there -- e.g. appending to a list
-# - Transport stack trace from server to client and append it to the system one at the client end
-# - Figure out how to get rid of RemoteRef -- too confusing!
-# - Implement syntax like:
-#     with process_isolation.Timeout(200):
-#       foo.bar()
-
-# - When a proxy's __del__ gets called, change the server-side registry reference to a weakref so that
-#   objects eventually get cleaned up
-
-# Reasons to re-implement pickle:
-# - support auto-wrapping of nested objects
-# - support lazily constructing proxies on client side and caching them
-# - support transporting code and types directly
-# - could dynamically create classes on server side and transport them to client side
-# - pickle can't transport tracebacks
-# - pickle does not support __getstate__, __setstate__, etc on __getnewargs__ on types (i.e. metaclass instances)
-# - When pickling exceptions, cPickle doesn't follow the pickle protocol at all
-#   - in particular, the exception constructor must accept zero args
-# - When we serialize proxies internally, we want to copy just the
-#   remote_id and other metadata, but when the end-user pickles a
-#   proxy object, we want someproxy.__getstate__ to delegate to the
-#   server-side implementation. We can't cleanly meet both
-#   requirements if we use pickle for transporting proxies between
-#   client and server.
+# TODO moved to file "TODO"
 
 # TEMP DEBUG:
 sys.setrecursionlimit(100)
-
-# These attributes should never be overriden
-SPECIAL_ATTRIBUTES = [ 
-    '__class__',
-    '__base__',
-    '__bases__',
-    '__getattribute__',
-    '__getattr__',
-    ]
-
-
 
 class TerminateProcess(BaseException):
     '''This exception is raised within the host to request a graceful
@@ -90,7 +30,9 @@ class TerminateProcess(BaseException):
 class ProcessTerminationError(Exception):
     '''Indicates that the host process crashed while processing a command.'''
     def __init__(self, signal_or_returncode):
-        Exception.__init__('Isolation host terminated with signal or returncode '+str(signal_or_returncode))
+        Exception.__init__(self,
+                           'Isolation host terminated with signal or returncode '
+                           +str(signal_or_returncode))
         self._signal_or_returncode = signal_or_returncode
 
 class ClientStateError(Exception):
@@ -120,11 +62,12 @@ def raw_repr(obj):
     else:
         return repr(obj)
 
-
 def _raise_terminate():
+    '''A helper function invoked on the server to tell it to terminate.'''
     raise TerminateProcess()
 
 def _load_module(module_name, path):
+    '''A helper function invoked on the server to tell it to import a module.'''
     # TODO: handle the case that the module is already loaded
     fd, filename, info = imp.find_module(module_name, path)
     try:
@@ -134,6 +77,8 @@ def _load_module(module_name, path):
             fd.close()
 
 def read_channel(channel, num_retries):
+    '''Read an object from a channel, possibly retrying if the attempt
+    is interrupted by a signal from the operating system.'''
     for i in range(num_retries):
         try:
             return channel.get()
@@ -301,12 +246,10 @@ def byvalue(proxy):
 class ObjectProxy(Proxy):
     '''A proxy for a server-side object.'''
     # To be run at server end:
-    def __init__(self, prime):
-        super(ObjectProxy,self).__init__(id(prime))
-        if hasattr(prime, '__doc__'):
-            self.__doc__ = prime.__doc__
-
-    # TODO: use a metaclass to omit these when the server does not support them:
+    def __init__(self, prime_id, docstring):
+        super(ObjectProxy,self).__init__(prime_id)
+        if docstring is not None:
+            self.__doc__ = docstring
 
     # Implement object-like special methods
     def __getattr__(self, attrname):
@@ -324,10 +267,6 @@ class ObjectProxy(Proxy):
             return super(ObjectProxy,self).__detattr__(attrname)
         else:
             return self.client.call(gelattr, self, attrname)
-
-    # Implement function-like special methods
-    def __call__(self, *args, **kwargs):
-        return self.client.call(self, *args, **kwargs)
 
     # Implement string-like special methods
     def __str__(self):
@@ -385,23 +324,29 @@ class ObjectProxy(Proxy):
     # Note that we do not include get/set/delslice, etc because they
     # are deprecated and not necessary. If they exist on the prime
     # then the get/set/delitem overloads above will call them.
+
+
+class CallableObjectProxy(ObjectProxy):
+    '''Represents an object proxy that can also be called like a
+    function. This is broken out into a sub-class so that TypeProxy
+    can be derived from ObjectProxy'''
+    # Implement function-like special methods
+    def __call__(self, *args, **kwargs):
+        return self.client.call(self, *args, **kwargs)
     
-class ExceptionProxy(Exception,Proxy):
-    def __init__(self, prime):
-        print 'Creating an ExceptionProxy with id='+str(id)
-        Proxy.__init__(self, id(prime))
-        if hasattr(prime, '__doc__'):
-            self.__doc__ = prime.__doc__
+class ExceptionProxy(Exception,ObjectProxy):
+    def __init__(self, prime_id, prime_docstring=None):
+        ObjectProxy.__init__(self, prime_id, prime_docstring)
     def __reduce__(self):
         return ExceptionProxy, (self.prime_id,)
 
 class FunctionProxy(Proxy):
     '''A proxy for a server-side function.'''
     # To be run at server end:
-    def __init__(self, prime):
-        super(FunctionProxy,self).__init__(id(prime))
-        if hasattr(prime, '__doc__'):
-            self.__doc__ = prime.__doc__
+    def __init__(self, prime_id, prime_docstring=None):
+        super(FunctionProxy,self).__init__(prime_id)
+        if prime_docstring is not None:
+            self.__doc__ = prime_docstring
 
     # To be run at client end:
     def __call__(self, *args, **kwargs):
@@ -430,10 +375,9 @@ class TypeProxyBlueprint(object):
         self._name = prime_class.__name__
         self._module = prime_class.__module__
         self._class_id = id(prime_class)
-        if hasattr(prime_class, '__doc__'):
-            self._doc = prime_class.__doc__
+        self._docstring = getattr(prime_class, '__doc__', None)
 
-class TypeProxy(type,Proxy):
+class TypeProxy(type,ObjectProxy):
     def attach_to_client(proxyclass, client):
         proxyclass._client = client
 
@@ -445,11 +389,9 @@ class TypeProxy(type,Proxy):
 
     def __init__(proxyclass, blueprint):
         print 'TypeProxy.__init__ was called'
-        Proxy.__init__(proxyclass, blueprint._class_id)
+        ObjectProxy.__init__(proxyclass, blueprint._class_id, blueprint._docstring)
         proxyclass._client = None
         proxyclass.__new__ = TypeProxy._new_instance
-        if hasattr(blueprint, '_doc'):
-            proxyclass.__doc__ = blueprint._doc
 
     def __new__(metaclass, blueprint):
         # TODO: find or create proxies for the base classes of prime_class
@@ -543,21 +485,24 @@ class Server(object):
     def wrap_impl(self, prime):
         print 'wrapping %s (id=%d)' % (str(prime), id(prime))
 
+        prime_id = id(prime)
+        prime_docstring = getattr(prime, '__doc__', None)
+
         if isinstance(prime, ByValue):
             # this indicates that the standard object proxying semantics are being overridden
             return prime.value
 
         if isinstance(prime, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
             print '  wrapping as callable'
-            return FunctionProxy(prime)
+            return FunctionProxy(prime_id, prime_docstring)
 
         elif isinstance(prime, (types.ModuleType)):
             print '  wrapping as module'
-            return ObjectProxy(prime)
+            return ObjectProxy(prime_id, prime_docstring)
 
         elif isinstance(prime, (types.FileType)):
             print '  wrapping as file'
-            return ObjectProxy(prime)
+            return ObjectProxy(prime_id, prime_docstring)
 
         elif isinstance(prime, type):
             print '  wrapping as type'
@@ -573,11 +518,14 @@ class Server(object):
                 # TODO: check that we can safely transport all standard exceptions
                 return None  # indicates that we should return this object by value
             else:
-                return ExceptionProxy(prime)
+                return ExceptionProxy(prime_id, prime_docstring)
 
         elif type(prime).__module__ != '__builtin__':
             print '  wrapping as object'
-            return ObjectProxy(prime)
+            if callable(prime):
+                return CallableObjectProxy(prime_id, prime_docstring)
+            else:
+                return ObjectProxy(prime_id, prime_docstring)
 
         elif type(prime) in (int,long,float,bool) or isinstance(prime, basestring):
             print '  not wrapping scalar'
@@ -590,8 +538,27 @@ class Server(object):
 
         else:
             print '  wrapping as object'
-            return ObjectProxy(prime)
+            return ObjectProxy(prime_id, prime_docstring)
 
+class ClientState(object):
+    '''An enumeration representing the state of a client object.'''
+    READY = 1
+    WAITING_FOR_RESULT = 2
+    TERMINATING = 3
+    TERMINATED_CLEANLY = 10
+    TERMINATED_WITH_ERROR = 11
+    TERMINATED_ASYNC = 12
+
+    TerminatedSet = (TERMINATED_CLEANLY, TERMINATED_WITH_ERROR, TERMINATED_ASYNC)
+
+    Names = {
+        READY: 'READY',
+        WAITING_FOR_RESULT: 'WAITING_FOR_RESULT',
+        TERMINATING: 'TERMINATING',
+        TERMINATED_CLEANLY: 'TERMINATED_CLEANLY',
+        TERMINATED_WITH_ERROR: 'TERMINATED_WITH_ERROR',
+        TERMINATED_ASYNC: 'TERMINATED_ASYNC'
+        }
 
 class Client(object):
     '''Represents a client that sends delegates and listens for results.'''
@@ -600,7 +567,7 @@ class Client(object):
         self._delegate_channel = delegate_channel
         self._result_channel = result_channel
         self._server_process = server_process
-        self._state = 'READY'
+        self._state = ClientState.READY
         self._proxy_by_id = dict()
         self._sigchld_count = 0
         atexit.register(self._on_exit)
@@ -612,7 +579,7 @@ class Client(object):
 
     @state.setter
     def state(self, v):
-        print 'client changing to state=%s' % v
+        print 'client changing to state='+ClientState.Names[v]
         self._state = v
 
     @property
@@ -624,7 +591,7 @@ class Client(object):
 
     def _assert_alive(self):
         if not self._server_process.is_alive():
-            self.state = 'TERMINATED_WITH_ERROR'
+            self.state = ClientState.TERMINATED_WITH_ERROR
             raise ProcessTerminationError(self._server_process._popen.returncode)
 
     def _on_sigchld(self):
@@ -640,40 +607,40 @@ class Client(object):
         # the stack up to the appropriate point. Otherwise, the
         # process is_alive() flag will be checked next time execute()
         # is called
-        if self.state == 'WAITING_FOR_RESULT':
+        if self.state == ClientState.WAITING_FOR_RESULT:
             raise ProcessTerminationError(self._server_process._popen.returncode)
 
-        elif self.state == 'READY':
+        elif self.state == ClientState.READY:
             # This means the child terminated at a time when it wasn't
             # running a command sent by this client. We will raise an
             # exception next time execute() is called.
-            self.state = 'TERMINATED_ASYNC'
+            self.state = ClientState.TERMINATED_ASYNC
 
-        elif self.state == 'TERMINATING':
+        elif self.state == ClientState.TERMINATING:
             # We just asked the server to terminate and it did so.
             # This case comes up if SIGCHLD arrives before terminate()
             # gets a chance to change self.state. Either way, we're
             # fine.
             pass
 
-        elif self.state == 'TERMINATED_CLEANLY':
+        elif self.state == ClientState.TERMINATED_CLEANLY:
             # We just asked the server to terminate and it did so.
             # This case comes up if SIGCHLD arrives after terminate()
             # changes self.state. Either way, we're fine.
             pass
 
-        elif self.state == 'TERMINATED_WITH_ERROR':
+        elif self.state == ClientState.TERMINATED_WITH_ERROR:
             # This should not come up because the only way we can get
             # to this state is if we execute something that crashes
             # the server, which causes SIGCHLD in state
-            # 'WAITING_FOR_RESULT', which throws
+            # ClientState.WAITING_FOR_RESULT, which throws
             # ProcessTerminationError, which is caught in self.execute()
 
             # Update: It seems that it's possible to get multiple SIGCHLD signals!
             raise ClientStateError('Recieved SIGCHLD when client state=%s, n=%d. This should not happen!' % \
                                        (self.state, self._sigchld_count))
 
-        elif self.state == 'TERMINATED_ASYNC':
+        elif self.state == ClientState.TERMINATED_ASYNC:
             # This should not come up because the only way we can get
             # to TERMINATED_ASYNC is if we recieved a previous
             # SIGCHLD, and we should only ever get one SIGCHLD per
@@ -718,11 +685,11 @@ class Client(object):
         # as a result of the current call.
         if self.state == 'TERIMATED_ASYNC':
             assert not self._server_process.is_alive()
-            self.state = 'TERMINATED_WITH_ERROR'
+            self.state = ClientState.TERMINATED_WITH_ERROR
             raise ProcessTerminationError(self._server_process._popen.returncode)
 
-        elif self.state != 'READY':
-            raise ClientStateError('execute() called while state='+self.state)
+        elif self.state != ClientState.READY:
+            raise ClientStateError('execute() called while state='+ClientState.Names[self.state])
 
         # Dispatch the delegate
         # TODO: can the queue itself throw exceptions?
@@ -733,17 +700,17 @@ class Client(object):
         # TODO: can the queue itself throw exceptions?
         try:
             self._assert_alive()
-            self.state = 'WAITING_FOR_RESULT'
+            self.state = ClientState.WAITING_FOR_RESULT
             self._assert_alive()
             result = read_channel(self._result_channel, num_retries=1)
             self._assert_alive()
         except ProcessTerminationError as ex:
             # Change state and re-raise
-            self.state = 'TERMINATED_WITH_ERROR'
+            self.state = ClientState.TERMINATED_WITH_ERROR
             raise ex
         finally:
             # In case some other exception is thrown by result_channel.get()...
-            self.state = 'READY'
+            self.state = ClientState.READY
 
         print 'client recieved result: '+raw_repr(result)
 
@@ -767,19 +734,19 @@ class Client(object):
     def terminate(self):
         '''Stop the server process and change our state to TERMINATING. Only valid if state=READY.'''
         print 'client.terminate() called (state=%s)' % self.state
-        if self.state == 'WAITING_FOR_RESULT':
-            raise ClientStateError('terimate() called while state='+self.state)
-        if self.state == 'TERMINATING':
-            raise ClientStateError('terimate() called while state='+self.state)
-        elif self.state in ('TERMINATED_CLEANLY', 'TERMINATED_WITH_ERROR', 'TERMINATED_ASYNC'):
+        if self.state == ClientState.WAITING_FOR_RESULT:
+            raise ClientStateError('terimate() called while state='+ClientState.Names[self.state])
+        if self.state == ClientState.TERMINATING:
+            raise ClientStateError('terimate() called while state='+ClientState.Names[self.state])
+        elif self.state in ClientState.TerminatedSet:
             assert not self._server_process.is_alive()
             return
-        elif self.state == 'READY':
+        elif self.state == ClientState.READY:
             # Check that the process itself is still alive
             self._assert_alive()
 
             # Make sure the SIGCHLD signal handler doesn't throw any exceptions
-            self.state = 'TERMINATING'
+            self.state = ClientState.TERMINATING
 
             # Do not call execute() because that function will check
             # whether the process is alive and throw an exception if not
@@ -794,22 +761,22 @@ class Client(object):
                 # Was interrupted five times in a row! Ignore for now
                 print 'client failed to read sentinel from channel after 5 retries - will terminate anyway'
 
-            self.state = 'TERMINATED_CLEANLY'
+            self.state = ClientState.TERMINATED_CLEANLY
 
     def cleanup(self):
         '''Terminate this client if it is not already terminated.'''
-        print 'cleanup() called while state is '+self.state
-        if self.state == 'WAITING_FOR_RESULT':
+        print 'cleanup() called while state is '+ClientState.Names[self.state]
+        if self.state == ClientState.WAITING_FOR_RESULT:
             # There is an ongoing call to execute()
             # Not sure what to do here
             print '  not sure what to do so doing nothing'
             pass
-        elif self.state == 'TERMINATING':
+        elif self.state == ClientState.TERMINATING:
             # terminate() has been called but we have not recieved SIGCHLD yet
             # Not sure what to do here
             print '  not sure what to do so doing nothing'
             pass
-        elif self.state in ('TERMINATED_CLEANLY', 'TERMINATED_WITH_ERROR', 'TERMINATED_ASYNC'):
+        elif self.state in ClientState.TerminatedSet:
             # We have already terminated
             # TODO: should we deal with TERMINATED_ASYNC in some special way?
             print '  nothing needs to be done'
@@ -827,6 +794,10 @@ class Client(object):
 
 
 class IsolationContext(object):
+    '''Represents a domain for executing code that is isolated from
+    the rest of the process. Each isolation context corresponds to a
+    single sub-process in which one or more python modules has been
+    loaded.'''
     def __init__(self):
         self._client = None
 
@@ -860,6 +831,9 @@ class IsolationContext(object):
         self._client = Client(server_process, request_queue, response_queue)
 
     def restart(self):
+        '''Terminate the child process and start a new process. This
+        does not restore any state, so any python modules that were
+        previously loaded will need to be reloaded.'''
         print 'IsolationContext[%d] restarting' % id(self)
         if self._client is not None:
             # It is always safe to call cleanup no matter what state the client is in

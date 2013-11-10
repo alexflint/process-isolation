@@ -52,7 +52,7 @@ class ProxyTest(unittest.TestCase):
 
     def test_standard_exception(self):
         with self.assertRaisesRegexp(Exception, 'foobar'):
-            self.mod.raise_standard_exception
+            self.mod.raise_standard_exception()
 
     def test_two_copies_of_class(self):
         c1 = self.mod.SomeClass
@@ -113,9 +113,17 @@ class ProxyTest(unittest.TestCase):
         self.assertItemsEqual(dir(obj), ['foo','bar'])
 
     def test_docs(self):
+        # Test getting documentation from a function
         self.assertEqual(self.mod.documented_func.__doc__, 'foobar')
+
+        # Test getting documentation from the class
         self.assertEqual(self.mod.DocumentedClass.__doc__, 'baz')
         self.assertEqual(self.mod.DocumentedClass.documented_member.__doc__, 'some documentation here')
+
+        # Test getting documentation from an instance
+        obj = self.mod.DocumentedClass()
+        self.assertEqual(obj.__doc__, 'baz')
+        self.assertEqual(obj.documented_member.__doc__, 'some documentation here')
 
     def _test_custom_exception(self):
         exception_type = self.mod.CustomException
@@ -123,11 +131,15 @@ class ProxyTest(unittest.TestCase):
             self.mod.raise_custom_exception()
         except Exception as ex:
             print 'Unittest caught an exception:'+str(ex)
-            print 'isinstance?'
-            print isinstance(ex, exception_type)
-            print 'instancecheck?'
-            print exception_type.__instancecheck__(ex)
+            #print 'isinstance?'
+            #print isinstance(ex, exception_type)
+            #print 'instancecheck?'
+            #print exception_type.__instancecheck__(ex)
             sys.exc_clear()
+
+    def test_call(self):
+        adder = self.mod.AddOneHundred()
+        self.assertEqual(adder(3), 103)
 
 
 class ImportTest(unittest.TestCase):
