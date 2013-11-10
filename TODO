@@ -1,0 +1,50 @@
+# DONE
+# - Implement docstring copying
+# - Add the module to local sys.modules so that it doesn't get loaded by some other module
+# - Migrate objects between client and server with "byvalue"
+# - Avoid reloading modules on server side
+# - Multiple separately isolated processes
+
+# TODO - important
+# - Deal with objects that are sent to server and then modified there -- e.g. appending to a list
+# - Deal with files
+# - Deal with generators
+# - Deal with call to sys.exit() in child process
+# - Detect when cPickle fails to pickle an object and automatically proxy it instead
+# - When a proxy's __del__ gets called, change the server-side registry reference to a weakref so that
+#   objects eventually get cleaned up
+
+# TODO - less important
+# - In Client.call, check that all RemoteRefs live in the remote host matching the current client
+# - Copy docstrings for each method within proxied classes
+# - Switch to the lower-level multiprocessing.Pipe in order to get access to the pickler object
+# - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
+# - Add an API to restart the server if it goes down
+#   - Make it possible to automatically restart the server?
+# - Implement reload(mymodule)
+# - Deal with extra-special funtions like __getattribute__, __class__, etc
+# - Replace __getattr__ with descriptors? And add __getattr__ only if the prime implements it?
+# - Wrap a module with a proxy that explicitly contains proxies for each member (for clarity)
+# - Can all exceptions classes in 'exceptions' be safely copied?
+# - Deal with modifications to global state
+# - Transport stack trace from server to client and append it to the system one at the client end
+# - Figure out how to get rid of RemoteRef -- too confusing!
+# - Implement syntax like:
+#     with process_isolation.Timeout(200):
+#       foo.bar()
+
+# Reasons to re-implement pickle:
+# - support auto-wrapping of nested objects
+# - support lazily constructing proxies on client side and caching them
+# - support transporting code and types directly
+# - could dynamically create classes on server side and transport them to client side
+# - pickle can't transport tracebacks
+# - pickle does not support __getstate__, __setstate__, etc on __getnewargs__ on types (i.e. metaclass instances)
+# - When pickling exceptions, cPickle doesn't follow the pickle protocol at all
+#   - in particular, the exception constructor must accept zero args
+# - When we serialize proxies internally, we want to copy just the
+#   remote_id and other metadata, but when the end-user pickles a
+#   proxy object, we want someproxy.__getstate__ to delegate to the
+#   server-side implementation. We can't cleanly meet both
+#   requirements if we use pickle for transporting proxies between
+#   client and server.
