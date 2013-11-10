@@ -1,3 +1,5 @@
+'''Elegant process isolation in pure Python.'''
+
 import os
 import sys
 import time
