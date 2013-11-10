@@ -340,18 +340,6 @@ class ExceptionProxy(Exception,ObjectProxy):
     def __reduce__(self):
         return ExceptionProxy, (self.prime_id,)
 
-class FunctionProxy(Proxy):
-    '''A proxy for a server-side function.'''
-    # To be run at server end:
-    def __init__(self, prime_id, prime_docstring=None):
-        super(FunctionProxy,self).__init__(prime_id)
-        if prime_docstring is not None:
-            self.__doc__ = prime_docstring
-
-    # To be run at client end:
-    def __call__(self, *args, **kwargs):
-        return self.client.call(self, *args, **kwargs)
-
 
 
 
@@ -366,7 +354,7 @@ class ExceptionalResult(object):
 
 
 
-class TypeProxyBlueprint(object):
+class TypeInfo(object):
     '''Represents the information needed to construct an instance of
     TypeProxy, in a form that, for the benefit of cPickle, is not
     itself a class (since classes are pickled by simply storing their
@@ -387,9 +375,9 @@ class TypeProxy(type,ObjectProxy):
     def __instancecheck__(proxyclass, obj):
         return proxyclass._client.call(isinstance, obj, proxyclass)
 
-    def __init__(proxyclass, blueprint):
+    def __init__(proxyclass, info):
         print 'TypeProxy.__init__ was called'
-        ObjectProxy.__init__(proxyclass, blueprint._class_id, blueprint._docstring)
+        ObjectProxy.__init__(proxyclass, info._class_id, info._docstring)
         proxyclass._client = None
         proxyclass.__new__ = TypeProxy._new_instance
 
@@ -494,7 +482,7 @@ class Server(object):
 
         if isinstance(prime, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
             print '  wrapping as callable'
-            return FunctionProxy(prime_id, prime_docstring)
+            return CallableObjectProxy(prime_id, prime_docstring)
 
         elif isinstance(prime, (types.ModuleType)):
             print '  wrapping as module'
@@ -510,7 +498,7 @@ class Server(object):
             # rejected by cPickle, we return a Blueprint, which is an
             # ordinary object containing all the information necessary
             # to construct a TypeProxy at the client site
-            return TypeProxyBlueprint(prime)
+            return TypeInfo(prime)
 
         elif isinstance(prime, BaseException):
             print '  wrapping as exception'
@@ -720,7 +708,7 @@ class Client(object):
             raise result.exception
 
         # Unpack any types
-        if isinstance(result, TypeProxyBlueprint):
+        if isinstance(result, TypeInfo):
             result = TypeProxy(result)
             # make sure to pass this through the check below too...
 
