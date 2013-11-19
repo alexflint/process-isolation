@@ -28,37 +28,102 @@
         </ul>
       </header>
       <section>
-        <h3>
-<a name="welcome-to-github-pages" class="anchor" href="#welcome-to-github-pages"><span class="octicon octicon-link"></span></a>Welcome to GitHub Pages.</h3>
+        <h1>
+<a name="process-isolation-in-python" class="anchor" href="#process-isolation-in-python"><span class="octicon octicon-link"></span></a>Process Isolation in Python</h1>
 
-<p>This automatic page generator is the easiest way to create beautiful pages for all of your projects. Author your page content here using GitHub Flavored Markdown, select a template crafted by a designer, and publish. After your page is generated, you can check out the new branch:</p>
+<p>Process isolation is a simple and elegant tool that lets you run
+python modules in sub-processes.</p>
 
-<pre><code>$ cd your_repo_root/repo_name
-$ git fetch origin
-$ git checkout gh-pages
+<pre><code>from process_isolation import import_isolated
+sys = import_isolated('sys')
+sys.stdout.write('Hello world\n')
 </code></pre>
 
-<p>If you're using the GitHub for Mac, simply sync your repository and you'll see the new branch.</p>
+<p>A few things happened here:</p>
+
+<ol>
+<li>
+<p>We imported the <code>process_isolation</code> module:</p>
+
+<pre><code>from process_isolation import import_isolated
+</code></pre>
+</li>
+<li>
+<p>The process forked and the <code>sys</code> module was imported in the child process:</p>
+
+<pre><code>sys = import_isolated('sys')
+</code></pre>
+</li>
+<li>
+<p>The parent process requested that the child process run <code>sys.stdout.write('Hello world\n')</code>:</p>
+
+<pre><code>sys.stdout.write('Hello world\n')
+</code></pre>
+</li>
+<li><p>The child process wrote <code>Hello world</code> to standard output.</p></li>
+</ol><p>One reason tun run code in an isolated process is to debug code that
+crashes at the operating system level with a segmentation fault or
+other signal. Here is some dangerous code:</p>
+
+<pre><code># buggy.py:
+
+import types
+def dragons_here():
+    types.FunctionType(types.CodeType(0, 0, 1, 0, 'd\x00\x00S', (), (), (), '', '', 1, ''),{})()
+</code></pre>
+
+<p>Running this code causes a hard abort (not a regular python exception),
+which makes it difficult to debug:</p>
+
+<pre><code>&gt;&gt;&gt; import buggy
+&gt;&gt;&gt; buggy.dragons_here()
+Segmentation fault: 11
+</code></pre>
+
+<p>We can safely run this code inside an isolated process, and do
+something when it crashes:</p>
+
+<pre><code>from process_isolation import import_isolated, ProcessTerminationError
+buggy = import_isolated('buggy')
+try:
+    buggy.dragons_here()
+except ProcessTerminationError as ex:
+    print 'There be dragons!'
+</code></pre>
 
 <h3>
-<a name="designer-templates" class="anchor" href="#designer-templates"><span class="octicon octicon-link"></span></a>Designer Templates</h3>
+<a name="using-process-isolation" class="anchor" href="#using-process-isolation"><span class="octicon octicon-link"></span></a>Using process isolation</h3>
 
-<p>We've crafted some handsome templates for you to use. Go ahead and continue to layouts to browse through them. You can easily go back to edit your page before publishing. After publishing your page, you can revisit the page generator and switch to another theme. Your Page content will be preserved if it remained markdown format.</p>
+<p><code>process_isolation</code> tries to be as transparent as possible. In many
+cases it is possible to simply replace </p>
+
+<pre><code>import X
+</code></pre>
+
+<p>with </p>
+
+<pre><code>X = import_isolated('X')
+</code></pre>
+
+<p>and leave all other code unchanged. <code>process_isolation</code> shuttles data
+back and forward between the main python interpreter and the forked
+child process, using proxies on the client side in place of objects
+that actually reside inside an isolated sub-process.</p>
 
 <h3>
-<a name="rather-drive-stick" class="anchor" href="#rather-drive-stick"><span class="octicon octicon-link"></span></a>Rather Drive Stick?</h3>
-
-<p>If you prefer to not use the automatic generator, push a branch named <code>gh-pages</code> to your repository to create a page manually. In addition to supporting regular HTML content, GitHub Pages support Jekyll, a simple, blog aware static site generator written by our own Tom Preston-Werner. Jekyll makes it easy to create site-wide headers and footers without having to copy them across every page. It also offers intelligent blog support and other advanced templating features.</p>
+<a name="caveats" class="anchor" href="#caveats"><span class="octicon octicon-link"></span></a>Caveats</h3>
 
 <h3>
-<a name="authors-and-contributors" class="anchor" href="#authors-and-contributors"><span class="octicon octicon-link"></span></a>Authors and Contributors</h3>
-
-<p>You can <a href="https://github.com/blog/821" class="user-mention">@mention</a> a GitHub username to generate a link to their profile. The resulting <code>&lt;a&gt;</code> element will link to the contributor's GitHub Profile. For example: In 2007, Chris Wanstrath (<a href="https://github.com/defunkt" class="user-mention">@defunkt</a>), PJ Hyett (<a href="https://github.com/pjhyett" class="user-mention">@pjhyett</a>), and Tom Preston-Werner (<a href="https://github.com/mojombo" class="user-mention">@mojombo</a>) founded GitHub.</p>
+<a name="why-process-isolation" class="anchor" href="#why-process-isolation"><span class="octicon octicon-link"></span></a>Why process isolation?</h3>
 
 <h3>
-<a name="support-or-contact" class="anchor" href="#support-or-contact"><span class="octicon octicon-link"></span></a>Support or Contact</h3>
+<a name="more-sophisticated-examples" class="anchor" href="#more-sophisticated-examples"><span class="octicon octicon-link"></span></a>More sophisticated examples</h3>
 
-<p>Having trouble with Pages? Check out the documentation at <a href="http://help.github.com/pages">http://help.github.com/pages</a> or contact <a href="mailto:support@github.com">support@github.com</a> and we’ll help you sort it out.</p>
+<h3>
+<a name="copying-objects-between-processes" class="anchor" href="#copying-objects-between-processes"><span class="octicon octicon-link"></span></a>Copying objects between processes</h3>
+
+<h3>
+<a name="under-the-hood" class="anchor" href="#under-the-hood"><span class="octicon octicon-link"></span></a>Under the hood</h3>
       </section>
       <footer>
         <p>This project is maintained by <a href="https://github.com/alexflint">alexflint</a></p>
