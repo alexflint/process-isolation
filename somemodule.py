@@ -1,3 +1,4 @@
+import sys
 import os
 
 x = 55
@@ -11,7 +12,6 @@ def count_calls():
     global n
     n += 1
     return n
-    
 
 def bar(a, b):
     return a+b*100
@@ -138,3 +138,19 @@ class DocumentedClass(object):
 class AddOneHundred(object):
     def __call__(self, x):
         return x + 100
+
+def generate_strings():
+    yield 'foo'
+    yield 'bar'
+
+def open_file(path):
+    return open(path)
+
+lambda_101 = lambda: 101
+
+def get_lambda_101():
+    return lambda: 101
+
+class Unpicklable(object):
+    def __getstate__(self):
+        assert(False)
