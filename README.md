@@ -16,7 +16,7 @@ A few things happened here:
     from process_isolation import import_isolated
     ````
 
-2. The current process forked and the `sys` module was imported in the child process:
+2. The process forked and the `sys` module was imported in the child process:
     ```
     sys = import_isolated('sys')
     ```
@@ -26,12 +26,12 @@ A few things happened here:
     sys.stdout.write('Hello world\n')
     ```
 
-4. The child process wrote `Hello world\n` to standard output.
+4. The child process wrote `Hello world` to standard output.
 
 
-One reason you might want to run a module in a separate process is
-when debugging code that crashes at the operating system level (as
-opposed to via ordinary python exceptions). Here is some buggy code:
+One reason tun run code in an isolated process is to debug code that
+crashes at the operating system level with a segmentation fault or
+other signal. Here is some dangerous code:
 
 ```
 # buggy.py:
@@ -50,7 +50,8 @@ which makes it difficult to debug:
 Segmentation fault: 11
 ```
 
-However, we can safely run this code in an isolated process:
+We can safely run this code inside an isolated process, and do
+something when it crashes:
 
 ```
 from process_isolation import import_isolated, ProcessTerminationError
@@ -74,7 +75,8 @@ with
 
 and leave all other code unchanged. `process_isolation` shuttles data
 back and forward between the main python interpreter and the forked
-child process for you.
+child process, using proxies on the client side in place of objects
+that actually reside inside an isolated sub-process.
 
 ### Caveats
 
