@@ -18,11 +18,16 @@ import traceback
 import inspect
 import operator
 import threading
+import logging
+import cPickle
 
 # TODO moved to file "TODO"
 
 # TEMP DEBUG:
 sys.setrecursionlimit(100)
+
+
+logger = logging.getLogger('process_isolation')
 
 class TerminateProcess(BaseException):
     '''This exception is raised within the host to request a graceful
@@ -31,24 +36,38 @@ class TerminateProcess(BaseException):
 
 class ProcessTerminationError(Exception):
     '''Indicates that the host process crashed while processing a command.'''
-    def __init__(self, signal_or_returncode):
-        Exception.__init__(self,
-                           'Isolation host terminated with signal or returncode '
-                           +str(signal_or_returncode))
-        self._signal_or_returncode = signal_or_returncode
+    def __init__(self, signal):
+        self._signal_or_returncode = signal
+        message = 'Isolation host terminated with signal or returncode '+str(signal)
+        Exception.__init__(self, message)
 
 class ClientStateError(Exception):
     '''Indicates that a command was attempted when a client that was in
     a state other than READY.'''
-    def __init__(self, msg):
-        Exception.__init__(self, msg)
+    pass
 
 class ChannelError(Exception):
     '''The client was repeatedly interrupted when trying to read data
     from the isolation host.'''
-    def __init__(self, msg):
-        Exception.__init__(self, msg)
+    pass
 
+class InternalServerError(Exception):
+    '''An error was raised in the core server code while attempting to
+    process a delegate from the client. This kind of error indicates a
+    problem in the core server logic, not an ordinary exception
+    raised by user code.'''
+    pass
+
+class InternalClientError(Exception):
+    '''An error was raised in the core client code while attempting to
+    execute a command. This kind of error indicates a
+    problem in the core client logic, not an ordinary exception
+    raised by user code.'''
+    pass
+
+def map_values(f, D):
+    '''Map each value in the dictionary D to f(value).'''
+    return { key:f(val) for key,val in D.iteritems() }
 
 def isproxy(x):
     '''Determine whether x is a proxy. Since proxies are designed to
@@ -71,31 +90,27 @@ def _raise_terminate():
 def _load_module(module_name, path):
     '''A helper function invoked on the server to tell it to import a module.'''
     # TODO: handle the case that the module is already loaded
-    fd, filename, info = imp.find_module(module_name, path)
+    try:
+        # First try to find a non-builtin, non-frozen, non-special
+        # module using the client's search path
+        fd, filename, info = imp.find_module(module_name, path)
+    except ImportError:
+        # The above will fail for builtin, frozen, or special
+        # modules. We search for those now...
+        fd, filename, info = imp.find_module(module_name)
+
+    # Now import the module given the info found above
     try:
         return imp.load_module(module_name, fd, filename, info)
     finally:
         if fd is not None:
             fd.close()
 
-def read_channel(channel, num_retries):
-    '''Read an object from a channel, possibly retrying if the attempt
-    is interrupted by a signal from the operating system.'''
-    for i in range(num_retries):
-        try:
-            return channel.get()
-        except IOError as ex:
-            if ex.errno == 4:
-                # This errno corresponds to "System call interrupted",
-                # which means a signal was recieved before any data
-                # was sent. For now I think it's safe to ignore this
-                # and continue.
-                print 'attempt to read from channel was interrupted by something'
-                print ex
-            else:
-                # Something else went wrong - raise the exception as usual
-                raise ex
-    raise ChannelError('failed to read from channel after %d retries' % num_retries)
+def byvalue(proxy):
+    '''Return a copy of the underlying object for which the argument
+    is a proxy.'''
+    assert isinstance(proxy, Proxy)
+    return proxy.client.execute(ByValueDelegate(proxy))
 
 class ChildProcessSignalHandler(object):
     '''Helper to catch SIGCHLD signals and dispatch them.'''
@@ -120,7 +135,7 @@ class ChildProcessSignalHandler(object):
 
     @classmethod
     def _handle_sigchld(cls, signum, stackframe):
-        print 'ChildProcessSignalHandler recieved SIGCHLD'
+        logger.debug('ChildProcessSignalHandler recieved SIGCHLD')
         # Note that when handling signals in python, this signal
         # handler is called out-of-line relative to other code, and
         # may itself be interrupted by any further signals. We should
@@ -134,7 +149,7 @@ class ChildProcessSignalHandler(object):
         # fact terminate
 
         if cls._mutex.acquire(False):
-            print 'ChildProcessSignalHandler acquired lock'
+            logger.debug('ChildProcessSignalHandler acquired lock')
             # We got the lock, we are reponsible for dispatching
             # listeners until we complete an iteration without
             # recieving any signals
@@ -147,7 +162,7 @@ class ChildProcessSignalHandler(object):
                     if not cls._processes[pid].is_alive():
                         pids_to_remove.append(pid)
                         for listener in listeners:
-                            print 'ChildProcessSignalHandler calling a listener'
+                            logger.debug('ChildProcessSignalHandler calling a listener')
                             listener()
 
                 # Must happen here and not outside the "while" or we will call some listeners multiple times
@@ -159,7 +174,7 @@ class ChildProcessSignalHandler(object):
             cls._mutex.release()
 
         else:
-            print 'ChildProcessSignalHandler did not acquire lock'
+            logger.debug('ChildProcessSignalHandler did not acquire lock')
             # There is another signal handler currently dispatching
             # signals so set the flag and leave the dispatching to
             # that handler.
@@ -208,7 +223,7 @@ class Delegate(object):
     def server(self):
         return self._server
 
-class FuncDelegate(Delegate):
+class FunctionCallDelegate(Delegate):
     def _transport(self, x):
         if isinstance(x, Proxy):
             return RemoteRef(x.prime_id)
@@ -220,19 +235,19 @@ class FuncDelegate(Delegate):
         else:
             return x
     def __init__(self, func, *args, **kwargs):
-        super(FuncDelegate, self).__init__()
+        super(FunctionCallDelegate, self).__init__()
         self._func = self._transport(func)
         self._args = map(self._transport, args)
-        self._kwargs = { k:self._transport(v) for k,v in kwargs.iteritems() }
+        self._kwargs = map_values(self._transport, kwargs)
     def run_on_server(self):
         func = self._resolve(self._func)
         args = map(self._resolve, self._args)
-        kwargs = { k:self._resolve(v) for k,v in self._kwargs.iteritems() }
+        kwargs = map_values(self._resolve, self._kwargs)
         return func(*args, **kwargs)
     def __str__(self):
         funcname = getattr(self._func, '__name__', '<remote func>')
         nargs = len(self._args) + len(self._kwargs)
-        return '<FuncDelegate: %s nargs=%d>' % (funcname, nargs)
+        return '<Delegate: %s nargs=%d>' % (funcname, nargs)
 
 class ByValueDelegate(Delegate):
     def __init__(self, proxy):
@@ -240,10 +255,6 @@ class ByValueDelegate(Delegate):
         self._prime_id = proxy.prime_id
     def run_on_server(self):
         return ByValue(self.server.get_prime(self._prime_id))
-
-def byvalue(proxy):
-    assert isinstance(proxy, Proxy)
-    return proxy.client.execute(ByValueDelegate(proxy))
 
 class ObjectProxy(Proxy):
     '''A proxy for a server-side object.'''
@@ -297,8 +308,8 @@ class ObjectProxy(Proxy):
         # Although __cmp__ will never be called by python builtins when
         # __lt__ are defined, we include it incase any user code explicitly calls it
         return self.client.call(cmp, self, other)
-    def __nonzero__(self, other):
-        return self.client.call(operator.truth, self, other)
+    def __nonzero__(self):
+        return self.client.call(operator.truth, self)
 
     # Implement sequence-like special methods
     def __len__(self):
@@ -344,7 +355,6 @@ class ExceptionProxy(Exception,ObjectProxy):
 
 
 
-
 class ExceptionalResult(object):
     '''Used to transport exceptions from the server to the client.'''
     def __init__(self, exception, traceback):
@@ -378,7 +388,7 @@ class TypeProxy(type,ObjectProxy):
         return proxyclass._client.call(isinstance, obj, proxyclass)
 
     def __init__(proxyclass, info):
-        print 'TypeProxy.__init__ was called'
+        logger.debug('TypeProxy.__init__ was called')
         ObjectProxy.__init__(proxyclass, info._class_id, info._docstring)
         proxyclass._client = None
         proxyclass.__new__ = TypeProxy._new_instance
@@ -390,6 +400,9 @@ class TypeProxy(type,ObjectProxy):
         proxymembers = dict()
         return type.__new__(metaclass, proxyname, proxybases, proxymembers)
 
+
+def isinstance_any(obj, types):
+    return any(isinstance(obj,type) for type in types)
 
 class ByValue(object):
     '''A container used by delegates to indicate to the object
@@ -424,78 +437,113 @@ class Server(object):
         return self._proxy_by_id[prime_id]
 
     def loop(self):
-        print 'server[%d] loop() starting' % os.getpid()
+        logger.debug('server[%d] loop() starting', os.getpid())
         terminate_flag = False
         while not terminate_flag:
             # Get the next delegate
             delegate = self._delegate_channel.get()
-            print 'server[%d] executing: %s' % (os.getpid(), str(delegate))
+            logger.debug('server[%d] executing: %s', os.getpid(), str(delegate))
 
             # Attach the delegate to the server environment
             delegate.attach_to_server(self)
 
+            # Run the delegate and wrap the result
             try:
-                # Run the delegate in the local environment 
+                # Run the delegate in the local environment
                 # The delegate will wrap the result itself
                 result = self.wrap(delegate.run_on_server())
             except TerminateProcess:
                 # This exception indicates that the client requested that we terminate
-                print 'server[%d] caught TerminateProcess' % os.getpid()
+                logger.debug('server[%d] caught TerminateProcess', os.getpid())
                 result = True
                 terminate_flag = True
             except:
                 # Any other exception gets transported back to the client
                 ex_type, ex_value, ex_traceback = sys.exc_info()
-                print 'Caught on server[%d]: %s' % (os.getpid(), str(ex_value))
-                traceback.print_exc()
+                result = ExceptionalResult(self.wrap(ex_value), traceback.format_exc())
+                logger.debug('Caught on server[%d]: %s', os.getpid(), ex_value)
+                sys.exc_clear()
 
-                result = ExceptionalResult(self.wrap(ex_value), None)
-                # TODO: find a way to transport a traceback (pickle can't serialize it)
+            # Serialize the result
+            try:
+                # Run the delegate in the local environment
+                # The delegate will wrap the result itself
+                result_str = cPickle.dumps(result)
+            except Exception as ex:
+                ex_type, ex_value, ex_traceback = sys.exc_info()
+                result = ExceptionalResult(self.wrap(ex_value), traceback.format_exc())
+                logger.debug('Caught on server[%d] while pickling: %s', os.getpid(), ex_type)
+                sys.exc_clear()
+
+                # Serialize the exception that was raised during pickling
+                try:
+                    # Run the delegate in the local environment 
+                    # The delegate will wrap the result itself
+                    result_str = cPickle.dumps(result)
+                except Exception as ex:
+                    # If a further exception is raised then stop trying to pickle exceptions
+                    message = Exception('While pickling a result of type %s, an exception of type %s '+
+                                        'was thrown, and while pickling that exception, a further '+
+                                        'exception of type %s was thrown.' % \
+                                            (type(result).__name__, ex_type.__name__, sys.exc_type.__name__))
+                    result = ExceptionalResult(message, '')
+                    result_str = cPickle.dumps(result)
+                    logger.debug('Caught on server[%d] while re-pickling: %s', os.getpid(), ex_type)
+                    sys.exc_clear()
 
             # Send the result to the client
-            print 'server putting %s onto result queue' % raw_repr(result)
-            self._result_channel.put(result)
+            logger.debug('server putting %s onto result queue', raw_repr(result))
+            self._result_channel.put(result_str)
 
-        print 'server[%d] loop ended' % os.getpid()
+        logger.debug('server[%d] loop ended', os.getpid())
 
     def wrap(self, prime):
+        logger.debug('wrapping %s (id=%d)', str(prime), id(prime))
+
         if id(prime) in self._proxy_by_id:
+            logger.debug('  returning a cached proxy')
             return self._proxy_by_id[id(prime)]
         else:
-            proxy = self.wrap_impl(prime)
-            if proxy is None:
-                # indicates that this object should be returned by value: do not cache
-                return prime
-            else:
-                print 'server created a proxy for prime_id=%d (will cache both prime and proxy)' % id(prime)
+            wrapped = self.wrap_impl(prime)
+            if wrapped is not prime:
+                logger.debug('server created a proxy for prime_id=Ox%x', id(prime))
                 self._prime_by_id[id(prime)] = prime
-                self._proxy_by_id[id(prime)] = proxy
-                return proxy
+                self._proxy_by_id[id(prime)] = wrapped
+            return wrapped
 
     def wrap_impl(self, prime):
-        print 'wrapping %s (id=%d)' % (str(prime), id(prime))
-
         prime_id = id(prime)
         prime_docstring = getattr(prime, '__doc__', None)
+
+        function_types = (types.FunctionType,
+                          types.MethodType,
+                          types.BuiltinFunctionType,
+                          types.BuiltinMethodType)
+
+        scalar_types = (int, long, float, bool, basestring)
 
         if isinstance(prime, ByValue):
             # this indicates that the standard object proxying semantics are being overridden
             return prime.value
 
-        if isinstance(prime, (types.FunctionType, types.MethodType)):  # do _not_ use callable(...) here
-            print '  wrapping as callable'
+        elif isinstance_any(prime, scalar_types):
+            logger.debug('  not wrapping scalar')
+            return prime  # indicates that we should return this object by value
+
+        elif isinstance_any(prime, function_types):  # do _not_ use callable(...) here
+            logger.debug('  wrapping as callable')
             return CallableObjectProxy(prime_id, prime_docstring)
 
         elif isinstance(prime, (types.ModuleType)):
-            print '  wrapping as module'
+            logger.debug('  wrapping as object')
             return ObjectProxy(prime_id, prime_docstring)
 
-        elif isinstance(prime, (types.FileType)):
-            print '  wrapping as file'
-            return ObjectProxy(prime_id, prime_docstring)
+        #elif isinstance(prime, (types.FileType)):
+        #    logger.debug('  wrapping as object')
+        #    return ObjectProxy(prime_id, prime_docstring)
 
         elif isinstance(prime, type):
-            print '  wrapping as type'
+            logger.debug('  wrapping as type')
             # Rather than returning a type directly, which would be
             # rejected by cPickle, we return a Blueprint, which is an
             # ordinary object containing all the information necessary
@@ -503,31 +551,27 @@ class Server(object):
             return TypeInfo(prime)
 
         elif isinstance(prime, BaseException):
-            print '  wrapping as exception'
+            logger.debug('  wrapping as exception')
             if type(prime).__module__ in ('exceptions', '__builtin__'):
                 # TODO: check that we can safely transport all standard exceptions
-                return None  # indicates that we should return this object by value
+                return prime  # indicates that we should return this object by value
             else:
                 return ExceptionProxy(prime_id, prime_docstring)
 
         elif type(prime).__module__ != '__builtin__':
-            print '  wrapping as object'
+            logger.debug('  wrapping as object')
             if callable(prime):
                 return CallableObjectProxy(prime_id, prime_docstring)
             else:
                 return ObjectProxy(prime_id, prime_docstring)
 
-        elif type(prime) in (int,long,float,bool) or isinstance(prime, basestring):
-            print '  not wrapping scalar'
-            return None  # indicates that we should return this object by value
-
         # TEMP HACK
         elif operator.isSequenceType(prime):
-            print '  not wrapping sequence'
-            return None  # indicates that we should return this object by value
+            logger.debug('  not wrapping sequence')
+            return prime  # indicates that we should return this object by value
 
         else:
-            print '  wrapping as object'
+            logger.debug('  wrapping as object')
             return ObjectProxy(prime_id, prime_docstring)
 
 class ClientState(object):
@@ -565,12 +609,21 @@ class Client(object):
 
     @property
     def state(self):
+        '''Get the current state of the client. This is one of the
+        values defined in ClientStates.'''
         return self._state
 
     @state.setter
-    def state(self, v):
-        print 'client changing to state='+ClientState.Names[v]
-        self._state = v
+    def state(self, state):
+        '''Change the state of the client. This is one of the values
+        defined in ClientStates.'''
+        logger.debug('client changing to state=%s', ClientState.Names[state])
+        self._state = state
+
+    @property
+    def strstate(self):
+        '''Get a string representation of the client's current state.'''
+        return ClientState.Names[self.state]
 
     @property
     def server_process(self):
@@ -585,7 +638,7 @@ class Client(object):
             raise ProcessTerminationError(self._server_process._popen.returncode)
 
     def _on_sigchld(self):
-        print 'client got SIGCHLD (state=%s)' % self.state
+        logger.debug('client got SIGCHLD (state=%s)', self.strstate)
         assert not self._server_process.is_alive()
         # Note that this will be called from *within* a signal handler
         # so it should be thought of as asynchronous with respect to
@@ -640,7 +693,8 @@ class Client(object):
 
         else:
             # We are in an unknown state
-            raise ClientStateError('Recieved SIGCHLD when client state=%s (which is an unknown state)' % self.state)
+            raise ClientStateError('Recieved SIGCHLD when client state=%s (which is an unknown state)' % \
+                                       self.state)
 
         # Always "join" the process so that the OS can clean it up and free its memory
         # TODO: handle timeouts here
@@ -650,22 +704,43 @@ class Client(object):
     def _on_exit(self):
         self.cleanup()
 
+    def _read_result(self, num_retries):
+        '''Read an object from a channel, possibly retrying if the attempt
+        is interrupted by a signal from the operating system.'''
+        for i in range(num_retries):
+            self._assert_alive()
+            try:
+                return self._result_channel.get()
+            except IOError as ex:
+                if ex.errno == 4:
+                    # errno=4 corresponds to "System call interrupted",
+                    # which means a signal was recieved before any data
+                    # was sent. For now I think it's safe to ignore this
+                    # and continue.
+                    logger.exception('attempt to read from channel was interrupted by something')
+                    sys.exc_clear()
+                else:
+                    # Something else went wrong - raise the exception as usual
+                    raise ex
+
+        raise ChannelError('failed to read from channel after %d retries' % num_retries)
+
     def attach_proxy(self, proxy):
         if proxy.prime_id in self._proxy_by_id:
             # Replace the proxy with the cached version so that
             # proxyect identity tests match the server
             proxy = self._proxy_by_id[proxy.prime_id]
-            print 'client replacing proxy for prime_id=%d with a cached proxy for the same prime (proxy_id=%d)' % \
-                (proxy.prime_id, id(proxy))
+            logger.debug('client replacing proxy for prime_id=%d with a cached proxy',
+                          proxy.prime_id)
             return proxy
         else:
             proxy.attach_to_client(self)
             self._proxy_by_id[proxy.prime_id] = proxy
-            print 'client added a proxy for prime_id=%d to its cache (proxy_id=%d)' % (proxy.prime_id, id(proxy))
+            logger.debug('client added a proxy for prime_id=%d to its cache', proxy.prime_id)
             return proxy
 
     def call(self, func, *args, **kwargs):
-        return self.execute(FuncDelegate(func, *args, **kwargs))
+        return self.execute(FunctionCallDelegate(func, *args, **kwargs))
 
     def execute(self, delegate):
         # The server process may have terminated since we last
@@ -679,35 +754,53 @@ class Client(object):
             raise ProcessTerminationError(self._server_process._popen.returncode)
 
         elif self.state != ClientState.READY:
-            raise ClientStateError('execute() called while state='+ClientState.Names[self.state])
+            raise ClientStateError('execute() called while state='+self.strstate)
 
         # Dispatch the delegate
         # TODO: can the queue itself throw exceptions?
-        print 'client sending delegate: %s' % str(delegate)
-        self._delegate_channel.put(delegate)
+        logger.debug('client sending delegate: %s', delegate)
+        try:
+            self._delegate_channel.put(delegate)
+        except Exception as ex:
+            # Any error here is unexpected and means we have some internal problem
+            self.state = ClientState.READY
+            raise InternalClientError, \
+                'Error in channel.put: '+ex.message, sys.exc_info()[2]
 
         # Get the result
-        # TODO: can the queue itself throw exceptions?
         try:
             self._assert_alive()
             self.state = ClientState.WAITING_FOR_RESULT
+            result_str = self._read_result(num_retries=1)
             self._assert_alive()
-            result = read_channel(self._result_channel, num_retries=1)
-            self._assert_alive()
+            self.state = ClientState.READY
         except ProcessTerminationError as ex:
             # Change state and re-raise
             self.state = ClientState.TERMINATED_WITH_ERROR
             raise ex
-        finally:
-            # In case some other exception is thrown by result_channel.get()...
+        except Exception as ex:
+            # Any other error is unexpected and means we have some internal problem
             self.state = ClientState.READY
+            raise InternalClientError, \
+                'Error in channel.get: '+ex.message, sys.exc_info()[2]
+            
 
-        print 'client recieved result: '+raw_repr(result)
+        # Unpickle the result
+        result = cPickle.loads(result_str)
+        logger.debug('client recieved result: '+raw_repr(result))
 
         # Unpack any exception raised on the server side
         if isinstance(result, ExceptionalResult):
-            print 'client recieved exceptional result: '+str(result)
-            raise result.exception
+            # TODO: append the server-side traceback to the client-side traceback
+            logger.debug('client recieved exceptional result: %s', result)
+            #logger.debug('server-side traceback:')
+            #logger.debug(result.traceback)
+            result.exception.message += 'Server-side traceback:\n' + result.traceback
+            if isinstance(result.exception, BaseException):
+                raise result.exception
+            else:
+                logger.debug('client recieved a server error: '+str(result.exception))
+                raise InternalServerError(str(result.exception))
 
         # Unpack any types
         if isinstance(result, TypeInfo):
@@ -716,18 +809,18 @@ class Client(object):
 
         # Replace with a cached proxy if we have one and attach it to the client environment
         if isinstance(result, Proxy):
-            print 'client attaching: '+raw_repr(result)
+            logger.debug('client attaching: %s', raw_repr(result))
             result = self.attach_proxy(result)
 
         return result
 
     def terminate(self):
         '''Stop the server process and change our state to TERMINATING. Only valid if state=READY.'''
-        print 'client.terminate() called (state=%s)' % self.state
+        logger.debug('client.terminate() called (state=%s)', self.strstate)
         if self.state == ClientState.WAITING_FOR_RESULT:
-            raise ClientStateError('terimate() called while state='+ClientState.Names[self.state])
+            raise ClientStateError('terimate() called while state='+self.strstate)
         if self.state == ClientState.TERMINATING:
-            raise ClientStateError('terimate() called while state='+ClientState.Names[self.state])
+            raise ClientStateError('terimate() called while state='+self.strstate)
         elif self.state in ClientState.TerminatedSet:
             assert not self._server_process.is_alive()
             return
@@ -741,38 +834,36 @@ class Client(object):
             # Do not call execute() because that function will check
             # whether the process is alive and throw an exception if not
             # TODO: can the queue itself throw exceptions?
-            self._delegate_channel.put(FuncDelegate(_raise_terminate))
+            self._delegate_channel.put(FunctionCallDelegate(_raise_terminate))
 
             # Wait for acknowledgement
-            # TODO: can the result queue throw an exception?
             try:
-                result = read_channel(self._result_channel, num_retries=5)
+                self._read_result(num_retries=5)
+            except ProcessTerminationError as ex:
+                pass
             except ChannelError as ex:
                 # Was interrupted five times in a row! Ignore for now
-                print 'client failed to read sentinel from channel after 5 retries - will terminate anyway'
+                logger.debug('client failed to read sentinel from channel after 5 retries - will terminate anyway')
 
             self.state = ClientState.TERMINATED_CLEANLY
 
     def cleanup(self):
-        '''Terminate this client if it is not already terminated.'''
-        print 'cleanup() called while state is '+ClientState.Names[self.state]
+        '''Terminate this client if it has not already terminated.'''
         if self.state == ClientState.WAITING_FOR_RESULT:
             # There is an ongoing call to execute()
             # Not sure what to do here
-            print '  not sure what to do so doing nothing'
-            pass
+            logger.warn('cleanup() called while state is WAITING_FOR_RESULT: ignoring')
         elif self.state == ClientState.TERMINATING:
             # terminate() has been called but we have not recieved SIGCHLD yet
             # Not sure what to do here
-            print '  not sure what to do so doing nothing'
-            pass
+            logger.warn('cleanup() called while state is TERMINATING: ignoring')
         elif self.state in ClientState.TerminatedSet:
             # We have already terminated
             # TODO: should we deal with TERMINATED_ASYNC in some special way?
-            print '  nothing needs to be done'
-            pass
+            logger.debug('cleanup() called while state is TERMINATING: nothing needs to be done')
         else:
-            print '  attempting to terminate'
+            logger.debug('cleanup() called while state is %s: attempting to terminate',
+                          self.strstate)
             try:
                 self.terminate()
             except ProcessTerminationError as ex:
@@ -806,7 +897,7 @@ class IsolationContext(object):
         '''Create a process in which the isolated code will be run.'''
         assert self._client is None
 
-        print 'IsolationContext[%d] starting' % id(self)
+        logger.debug('IsolationContext[%d] starting', id(self))
 
         # Create the queues
         request_queue = multiprocessing.Queue()
@@ -824,7 +915,7 @@ class IsolationContext(object):
         '''Terminate the child process and start a new process. This
         does not restore any state, so any python modules that were
         previously loaded will need to be reloaded.'''
-        print 'IsolationContext[%d] restarting' % id(self)
+        logger.debug('IsolationContext[%d] restarting', id(self))
         if self._client is not None:
             # It is always safe to call cleanup no matter what state the client is in
             self._client.cleanup()
@@ -833,7 +924,6 @@ class IsolationContext(object):
 
     def ensure_started(self):
         '''If the subprocess for this isolation context has not been created then create it.'''
-        print 'IsolationContext[%d] ensure_started: client is None? %s' % (id(self), str(self._client is None))
         if self._client is None:
             self.start()
 
