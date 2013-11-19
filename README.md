@@ -4,16 +4,17 @@ Process isolation is a simple and elegant tool that lets you run
 python modules in sub-processes.
 
 ```
-    import process_isolation
-    sys = process_isolation.import_isolated('sys')
-    sys.stdout.write('Hello world\n')
+import process_isolation
+sys = process_isolation.import_isolated('sys')
+sys.stdout.write('Hello world\n')
 ````
 
 A few things happened here:
 
 1. We imported process_isolation:
-
-        import process_isolation
+    ```
+    import process_isolation
+    ````
 
 2. The current process forked and the `sys` module was imported in the child process:
 
