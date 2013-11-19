@@ -954,6 +954,5 @@ def load_module(module_name):
 def import_isolated(module_name, fromlist=[], level=-1):
     '''Import an module into an isolated context as if with
     "__import__('module_name')"'''
-    mod = load_module(module_name)
-    sys.modules['module_name'] = mod
+    sys.modules[module_name] = load_module(module_name)
     return __import__(module_name, fromlist=fromlist, level=level)

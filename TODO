@@ -20,12 +20,13 @@
 			numpy
 			runpy
 			flask (isolate the client funcs)
+# - Add an API to restart the server if it goes down
+# - If a module already exists when it is imported isolated then replace it
 
 # TODO - before 1.0
 # - trim the exposed interface using an __init__.py file
 # - Transport stack trace from server to client and append it to the system one at the client end
-# - Add an API to restart the server if it goes down
-#   - Make it possible to automatically restart the server?
+# - Make it possible to automatically restart the server?
 # - When a proxy's __del__ gets called, change the server-side registry reference to a weakref so that
 #   objects eventually get cleaned up
 # - Deal with call to sys.exit() in child process
