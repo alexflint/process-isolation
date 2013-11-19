@@ -61,7 +61,7 @@ except ProcessTerminationError as ex:
     print 'There be dragons!'
 ````
 
-## Using process isolation
+# Using process isolation
 
 `process_isolation` tries to be as transparent as possible. In many
 cases it is possible to simply replace 
@@ -76,13 +76,13 @@ and leave all other code unchanged. `process_isolation` shuttles data
 back and forward between the main python interpreter and the forked
 child process for you.
 
-## Caveats
+# Caveats
 
-## Why process isolation?
+# Why process isolation?
 
-## More sophisticated examples
+# More sophisticated examples
 
-## Copying objects between processes
+# Copying objects between processes
 
-## Under the hood
+# Under the hood
 
