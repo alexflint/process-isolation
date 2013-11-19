@@ -11,7 +11,7 @@ sys.stdout.write('Hello world\n')
 
 A few things happened here:
 
-1. We imported process_isolation:
+1. We imported the `process_isolation` module:
     ```
     import process_isolation
     ````
