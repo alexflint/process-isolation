@@ -4,34 +4,55 @@
 # - Migrate objects between client and server with "byvalue"
 # - Avoid reloading modules on server side
 # - Multiple separately isolated processes
-
-# TODO - important
-# - Deal with objects that are sent to server and then modified there -- e.g. appending to a list
-# - Deal with files
 # - Deal with generators
-# - Deal with call to sys.exit() in child process
-# - Detect when cPickle fails to pickle an object and automatically proxy it instead
-# - When a proxy's __del__ gets called, change the server-side registry reference to a weakref so that
-#   objects eventually get cleaned up
+# - Deal with files
+# - Deal with lambdas
 
-# TODO - less important
-# - In Client.call, check that all RemoteRefs live in the remote host matching the current client
-# - Copy docstrings for each method within proxied classes
-# - Switch to the lower-level multiprocessing.Pipe in order to get access to the pickler object
-# - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
+# TODO - before first release
+# - documentation
+# - make a nice "insubprocess" function decorator
+# - test on: 
+			[done] sys
+			[done] os
+			marshal
+			sqlite
+			thread
+			numpy
+			runpy
+			flask (isolate the client funcs)
+
+# TODO - before 1.0
+# - trim the exposed interface using an __init__.py file
+# - Transport stack trace from server to client and append it to the system one at the client end
 # - Add an API to restart the server if it goes down
 #   - Make it possible to automatically restart the server?
+# - When a proxy's __del__ gets called, change the server-side registry reference to a weakref so that
+#   objects eventually get cleaned up
+# - Deal with call to sys.exit() in child process
+# - Detect when cPickle fails to pickle an object and automatically proxy it instead
+
+
+# TODO - before 2.0
+# - Have the client 
+# - In Client.call, check that all RemoteRefs live in the remote host matching the current client
+# - Switch to the lower-level multiprocessing.Pipe in order to get access to the pickler object
+# - Omit __len__, __call__, __dir__, etc whenever the prime doesn't offer them
 # - Implement reload(mymodule)
-# - Deal with extra-special funtions like __getattribute__, __class__, etc
-# - Replace __getattr__ with descriptors? And add __getattr__ only if the prime implements it?
-# - Wrap a module with a proxy that explicitly contains proxies for each member (for clarity)
+# - Replace __getattr__ with dynamically inserted descriptors
 # - Can all exceptions classes in 'exceptions' be safely copied?
-# - Deal with modifications to global state
-# - Transport stack trace from server to client and append it to the system one at the client end
-# - Figure out how to get rid of RemoteRef -- too confusing!
 # - Implement syntax like:
 #     with process_isolation.Timeout(200):
 #       foo.bar()
+# - Make it possible to host objects on the client and send proxies to them to the server
+# - Deal with multi-threaded clients and servers
+
+
+# TODO - less important
+# - Figure out how to get rid of RemoteRef -- too confusing!
+# - Deal with modifications to global state
+# - Deal with extra-special funtions like __getattribute__, __class__, etc
+
+
 
 # Reasons to re-implement pickle:
 # - support auto-wrapping of nested objects
