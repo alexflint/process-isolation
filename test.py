@@ -4,6 +4,7 @@ import unittest
 import logging
 import tempfile
 import subprocess
+import collections
 
 from process_isolation import *
 
@@ -275,6 +276,35 @@ class OsTest(unittest.TestCase):
 
         self.isolated_os.remove(temp_fd.name)
         self.assertFalse(os.path.exists(temp_fd.name))
+
+Person = collections.namedtuple('Person', 'firstname lastname age')
+
+class SqliteTest(unittest.TestCase):
+    '''Tests that run the 'sqlite' module in an isolated context.'''
+    def setUp(self):
+        self.people = [ Person('John', 'Smith', 34),
+                        Person('Brent', 'Bath', 18),
+                        Person('Mitt', 'Stew', 44) ]
+
+        self.isolated_sqlite = load_module('sqlite3')
+        self.conn = self.isolated_sqlite.connect(':memory:')
+        self.c = self.conn.cursor()
+        self.c.execute('CREATE TABLE people(firstname TEXT, lastname TEXT, age INT)')
+
+        for person in self.people:
+            self.c.execute('INSERT INTO people(firstname, lastname, age) VALUES(?, ?, ?)', person)
+
+    def test_query(self):
+        self.c.execute('SELECT * FROM people')
+        result = self.c.fetchall()
+        for row,person in zip(result, self.people):
+            self.assertEqual(row[0], person.firstname)
+            self.assertEqual(row[1], person.lastname)
+            self.assertEqual(row[2], person.age)
+
+
+
+
 
    
 if __name__ == '__main__':
