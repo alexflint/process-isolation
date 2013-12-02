@@ -1,1 +1,1 @@
-python setup.py sdist release
+python setup.py sdist upload
