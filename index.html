@@ -4,11 +4,11 @@
   <head>
     <meta charset='utf-8' />
     <meta http-equiv="X-UA-Compatible" content="chrome=1" />
-    <meta name="description" content="Process-isolation : Elegant process isolation in pure python" />
+    <meta name="description" content="Process Isolation in Python : Elegant process isolation in pure python" />
 
     <link rel="stylesheet" type="text/css" media="screen" href="stylesheets/stylesheet.css">
 
-    <title>Process-isolation</title>
+    <title>Process Isolation in Python</title>
   </head>
 
   <body>
@@ -18,7 +18,7 @@
         <header class="inner">
           <a id="forkme_banner" href="https://github.com/alexflint/process-isolation">View on GitHub</a>
 
-          <h1 id="project_title">Process-isolation</h1>
+          <h1 id="project_title">Process Isolation in Python</h1>
           <h2 id="project_tagline">Elegant process isolation in pure python</h2>
 
             <section id="downloads">
@@ -31,49 +31,47 @@
     <!-- MAIN CONTENT -->
     <div id="main_content_wrap" class="outer">
       <section id="main_content" class="inner">
-        <h1>
-<a name="process-isolation-in-python" class="anchor" href="#process-isolation-in-python"><span class="octicon octicon-link"></span></a>Process Isolation in Python</h1>
+        <p><code>process_isolation</code> is a simple and elegant python module that lets
+you run python modules in child processes but interact with them like
+ordinary python modules.</p>
 
-<p>Process isolation is a simple and elegant tool that lets you run
-python modules in sub-processes.</p>
+<h3>
+<a name="installation" class="anchor" href="#installation"><span class="octicon octicon-link"></span></a>Installation</h3>
 
-<pre><code>from process_isolation import import_isolated
-sys = import_isolated('sys')
-sys.stdout.write('Hello world\n')
+<p>Process isolation is implemented in pure python so installation is simple:</p>
+
+<pre><code>$ pip install process_isolation
 </code></pre>
+
+<h3>
+<a name="quickstart" class="anchor" href="#quickstart"><span class="octicon octicon-link"></span></a>Quickstart</h3>
+
+<p>Let's start with the hello world of process isolation:</p>
+
+<div class="highlight highlight-python"><pre><span class="kn">from</span> <span class="nn">process_isolation</span> <span class="kn">import</span> <span class="n">import_isolated</span>
+<span class="n">sys</span> <span class="o">=</span> <span class="n">import_isolated</span><span class="p">(</span><span class="s">'sys'</span><span class="p">)</span>
+<span class="n">sys</span><span class="o">.</span><span class="n">stdout</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="s">'Hello world</span><span class="se">\n</span><span class="s">'</span><span class="p">)</span>
+</pre></div>
 
 <p>A few things happened here:</p>
 
 <ol>
-<li>
-<p>We imported the <code>process_isolation</code> module:</p>
-
-<pre><code>from process_isolation import import_isolated
-</code></pre>
-</li>
-<li>
-<p>The process forked and the <code>sys</code> module was imported in the child process:</p>
-
-<pre><code>sys = import_isolated('sys')
-</code></pre>
-</li>
-<li>
-<p>The parent process requested that the child process run <code>sys.stdout.write('Hello world\n')</code>:</p>
-
-<pre><code>sys.stdout.write('Hello world\n')
-</code></pre>
-</li>
+<li><p>We imported the <code>process_isolation</code> module.</p></li>
+<li><p>A child process was forked off from the main python process and the
+<code>sys</code> module was imported into that process.</p></li>
+<li><p>The main python process requested that the child process run
+<code>sys.stdout.write('Hello world\n')</code></p></li>
 <li><p>The child process wrote <code>Hello world</code> to standard output.</p></li>
-</ol><p>One reason tun run code in an isolated process is to debug code that
-crashes at the operating system level with a segmentation fault or
-other signal. Here is some dangerous code:</p>
+</ol><p>One reason to run code in an isolated process is to debug code that
+might crash at the C level, such as due to a segmentation fault rather
+than an ordinary python exception. Here is some dangerous code:</p>
 
-<pre><code># buggy.py:
+<div class="highlight highlight-python"><pre><span class="c"># buggy.py:</span>
 
-import types
-def dragons_here():
-    types.FunctionType(types.CodeType(0, 0, 1, 0, 'd\x00\x00S', (), (), (), '', '', 1, ''),{})()
-</code></pre>
+<span class="kn">import</span> <span class="nn">types</span>
+<span class="k">def</span> <span class="nf">dragons_here</span><span class="p">():</span>
+    <span class="n">types</span><span class="o">.</span><span class="n">FunctionType</span><span class="p">(</span><span class="n">types</span><span class="o">.</span><span class="n">CodeType</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="s">'d</span><span class="se">\x00\x00</span><span class="s">S'</span><span class="p">,</span> <span class="p">(),</span> <span class="p">(),</span> <span class="p">(),</span> <span class="s">''</span><span class="p">,</span> <span class="s">''</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="s">''</span><span class="p">),{})()</span>
+</pre></div>
 
 <p>Running this code causes a hard abort (not a regular python exception),
 which makes it difficult to debug:</p>
@@ -83,22 +81,22 @@ which makes it difficult to debug:</p>
 Segmentation fault: 11
 </code></pre>
 
-<p>We can safely run this code inside an isolated process, and do
-something when it crashes:</p>
+<p>However, inside an isolated process we can safely run this code without our
+entire python interpreter crashing:</p>
 
-<pre><code>from process_isolation import import_isolated, ProcessTerminationError
-buggy = import_isolated('buggy')
-try:
-    buggy.dragons_here()
-except ProcessTerminationError as ex:
-    print 'There be dragons!'
-</code></pre>
+<div class="highlight highlight-python"><pre><span class="kn">from</span> <span class="nn">process_isolation</span> <span class="kn">import</span> <span class="n">import_isolated</span><span class="p">,</span> <span class="n">ProcessTerminationError</span>
+<span class="n">buggy</span> <span class="o">=</span> <span class="n">import_isolated</span><span class="p">(</span><span class="s">'buggy'</span><span class="p">)</span>
+<span class="k">try</span><span class="p">:</span>
+    <span class="n">buggy</span><span class="o">.</span><span class="n">dragons_here</span><span class="p">()</span>
+<span class="k">except</span> <span class="n">ProcessTerminationError</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+    <span class="k">print</span> <span class="s">'There be dragons!'</span>
+</pre></div>
 
 <h3>
 <a name="using-process-isolation" class="anchor" href="#using-process-isolation"><span class="octicon octicon-link"></span></a>Using process isolation</h3>
 
-<p><code>process_isolation</code> tries to be as transparent as possible. In many
-cases it is possible to simply replace </p>
+<p><code>process_isolation</code> tries to be invisible whenever possible. In many
+cases it is possible to simply replace</p>
 
 <pre><code>import X
 </code></pre>
@@ -108,32 +106,172 @@ cases it is possible to simply replace </p>
 <pre><code>X = import_isolated('X')
 </code></pre>
 
-<p>and leave all other code unchanged. <code>process_isolation</code> shuttles data
-back and forward between the main python interpreter and the forked
-child process, using proxies on the client side in place of objects
-that actually reside inside an isolated sub-process.</p>
+<p>and leave all other code unchanged. Internally, <code>process_isolation</code>
+shuttles data back and forward between the main python interpreter and
+the forked child process. When you call a function from an isolated
+module, that function runs in the isolated child process.</p>
 
-<h3>
-<a name="caveats" class="anchor" href="#caveats"><span class="octicon octicon-link"></span></a>Caveats</h3>
+<div class="highlight highlight-python"><pre><span class="n">os</span> <span class="o">=</span> <span class="n">import_isolated</span><span class="p">(</span><span class="s">'os'</span><span class="p">)</span>
+<span class="n">os</span><span class="o">.</span><span class="n">rmdir</span><span class="p">(</span><span class="s">'/tmp/foo'</span><span class="p">)</span>  <span class="c"># this function will run in the isolated child process</span>
+</pre></div>
 
-<h3>
-<a name="why-process-isolation" class="anchor" href="#why-process-isolation"><span class="octicon octicon-link"></span></a>Why process isolation?</h3>
+<p>The same is true when you instantiate a class -- after all, a
+constructor is really just a special kind of function.</p>
 
-<h3>
-<a name="more-sophisticated-examples" class="anchor" href="#more-sophisticated-examples"><span class="octicon octicon-link"></span></a>More sophisticated examples</h3>
+<div class="highlight highlight-python"><pre><span class="n">collections</span> <span class="o">=</span> <span class="n">import_isolated</span><span class="p">(</span><span class="s">'collections'</span><span class="p">)</span>
+<span class="n">my_dict</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">()</span>
+</pre></div>
+
+<p>This code creates an <code>OrderedDict</code> object residing in the isolated
+process. To make sure the isolated process really is isolated, the
+<code>OrderedDict</code> will stay in the child process forever. <code>my_dict</code> is
+actually a proxy object that will shuttle member calls back and forth
+to the child process. For all intents and purposes, you can treat
+<code>my_dict</code> just like a real <code>OrderedDict</code>:</p>
+
+<div class="highlight highlight-python"><pre><span class="n">my_dict</span><span class="p">[</span><span class="s">'abc'</span><span class="p">]</span> <span class="o">=</span> <span class="mi">123</span>
+<span class="k">print</span> <span class="n">my_dict</span><span class="p">[</span><span class="s">'abc'</span><span class="p">]</span>
+<span class="k">print</span> <span class="n">my_dict</span><span class="o">.</span><span class="n">viewvalues</span><span class="p">()</span>
+<span class="k">for</span> <span class="n">key</span><span class="p">,</span><span class="n">value</span> <span class="ow">in</span> <span class="n">my_dict</span><span class="o">.</span><span class="n">iteritems</span><span class="p">():</span>
+    <span class="k">print</span> <span class="n">key</span><span class="p">,</span><span class="n">value</span>
+
+<span class="k">try</span><span class="p">:</span>
+    <span class="n">x</span> <span class="o">=</span> <span class="n">my_dict</span><span class="p">[</span><span class="s">'xyz'</span><span class="p">]</span>
+<span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+    <span class="k">print</span> <span class="s">'The dictionary does not contain xyz'</span>
+</pre></div>
+
+<p>Under the hood, each of these calls involves some shuttling of data
+back and forth between the child and server process. If anything were
+to crash along the way, you would get a <code>ProcessTerminatedError</code>
+instead of a hard crash, but other than that, everything should work
+exactly as if there were no process isolation involved.</p>
 
 <h3>
 <a name="copying-objects-between-processes" class="anchor" href="#copying-objects-between-processes"><span class="octicon octicon-link"></span></a>Copying objects between processes</h3>
 
+<p>Sometimes this proxying behaviour can be inconvenient or
+inefficient. To get a copy of the real object behind the proxy, use
+<code>byvalue</code>:</p>
+
+<div class="highlight highlight-python"><pre><span class="kn">from</span> <span class="nn">process_isolation</span> <span class="kn">import</span> <span class="n">import_isolated</span><span class="p">,</span> <span class="n">byvalue</span>
+<span class="n">collections</span> <span class="o">=</span> <span class="n">import_isolated</span><span class="p">(</span><span class="s">'collections'</span><span class="p">)</span>
+<span class="n">proxy_to_a_dict</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">({</span><span class="s">'fred'</span><span class="p">:</span><span class="mi">11</span><span class="p">,</span> <span class="s">'tom'</span><span class="p">:</span><span class="mi">12</span><span class="p">})</span>
+<span class="n">the_real_deal</span> <span class="o">=</span> <span class="n">byvalue</span><span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">({</span><span class="s">'fred'</span><span class="p">:</span><span class="mi">11</span><span class="p">,</span> <span class="s">'tom'</span><span class="p">:</span><span class="mi">12</span><span class="p">}))</span>
+
+<span class="k">print</span> <span class="nb">type</span><span class="p">(</span><span class="n">proxy_to_a_dict</span><span class="p">)</span>
+<span class="k">print</span> <span class="nb">type</span><span class="p">(</span><span class="n">the_real_deal</span><span class="p">)</span>
+</pre></div>
+
+<p>This will print:</p>
+
+<pre><code>&gt;&gt;&gt; process_isolation.ObjectProxy
+&gt;&gt;&gt; collections.OrderedDict
+</code></pre>
+
+<p><code>byvalue</code> copies an object from the child process to the main
+python interpreter, with the usual semantics of deep copies. Any
+references to the original object will continue to refer to the
+original object. If the original object is changed, those changes will
+not show up in the copy residing in main python interpreter, and vice
+versa.</p>
+
+<p>Note that all calls to members of <code>the_real_deal</code> will now execute in
+the main python interpreter, so if one of those members causes a
+segfault then the main python interpreter will crash, just as if you
+ran the whole thing without involving <code>process_isolation</code> at all.</p>
+
 <h3>
-<a name="under-the-hood" class="anchor" href="#under-the-hood"><span class="octicon octicon-link"></span></a>Under the hood</h3>
+<a name="why-process-isolation" class="anchor" href="#why-process-isolation"><span class="octicon octicon-link"></span></a>Why process isolation?</h3>
+
+<p><strong>Dealing with misbehaving C modules</strong></p>
+
+<p>We originally built <code>process_isolation</code> to help benchmark a computer
+vision library written in C. We had built a python interface to the
+underlying C library using boost python and we wanted to use python to
+manage the datasets, accumulate success rates, generate reports, and
+so on. During development, it was not uncommon for our C library to
+crash from time to time, but instead of getting an empty report
+whenever any one test cases caused a crash, we wanted to record
+exactly which inputs caused the crash, and then continue to run the
+remaining tests. We built <code>process_isolation</code> and used it to run all
+the computer vision code in an isolated process, which allowed us to
+give detailed error reports when something went wrong at the C level,
+and to continue running the remaining tests afterwards.</p>
+
+<p>We were also running our computer vision code interactively from
+ipython. However, importing the computer vision module directly meant
+that a crash at the C level would destroyed the entire ipython session
+and all the working variables along with it. Anyone who has done
+interactive experiments with numerical software will appreciate the
+frustration of losing an hour of carefully constructed matrices just
+before the command that would have completed whatever experiment was
+being run. Using <code>process_isolation</code> from ipython avoided this
+possibility in a very robust way. At worst case, a command would raise
+a <code>ProcessTerminationError</code>, but all the variables and other session
+state would remain intact.</p>
+
+<p><strong>Running untrusted code</strong></p>
+
+<p>Although there are many ways of running untrusted code in python, the
+most secure way is to use a restricted environment enforced by the
+operating system. <code>process_isolation</code> is ideal for running some code
+in a subprocess. Here is how to create a <code>chroot</code> jail. </p>
+
+<p>First we create an "untrusted" module to experiment with.</p>
+
+<div class="highlight highlight-python"><pre><span class="c"># untrusted.py: untrusted code lives here</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="k">def</span> <span class="nf">ls_root</span><span class="p">():</span>
+    <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">listdir</span><span class="p">(</span><span class="s">'/'</span><span class="p">)</span>
+</pre></div>
+
+<p>Next we set up the chroot jail. Note that this code must be run with
+superuser priveleges because the <code>chroot</code> system call requires
+superuser priveleges.</p>
+
+<div class="highlight highlight-python"><pre><span class="c"># run_untrusted_code.py</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">process_isolation</span>
+
+<span class="c"># Start a subprocess but do not import the untrusted module until we've installed the chroot jail</span>
+<span class="n">context</span> <span class="o">=</span> <span class="n">process_isolation</span><span class="o">.</span><span class="n">default_context</span><span class="p">()</span>
+<span class="n">context</span><span class="o">.</span><span class="n">ensure_started</span><span class="p">()</span>
+
+<span class="c"># Create a directoy in which to jail the untrusted module</span>
+<span class="n">os</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="s">'/tmp/chroot_jail'</span><span class="p">)</span>
+
+<span class="c"># Create a file inside the chroot so that we can recognize the jail when we see it</span>
+<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s">'/tmp/chroot_jail/you_are_in_jail_muahaha'</span><span class="p">,</span><span class="s">'w'</span><span class="p">):</span>
+    <span class="k">pass</span>
+
+<span class="k">try</span><span class="p">:</span>
+    <span class="c"># Install the chroot</span>
+    <span class="n">context</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">chroot</span><span class="p">,</span> <span class="s">'/tmp/chroot_jail'</span><span class="p">)</span>
+<span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+    <span class="k">print</span> <span class="s">'This script must be run with superuser priveleges'</span>
+
+<span class="c"># Now we can safely import and run the untrusted module</span>
+<span class="n">untrusted</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">load_module</span><span class="p">(</span><span class="s">'untrusted'</span><span class="p">,</span> <span class="n">path</span><span class="o">=</span><span class="p">[</span><span class="s">'.'</span><span class="p">])</span>
+<span class="k">print</span> <span class="n">untrusted</span><span class="o">.</span><span class="n">ls_root</span><span class="p">()</span>
+
+<span class="c"># Clean up</span>
+<span class="n">os</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="s">'/tmp/chroot_jail/you_are_in_jail_muahaha'</span><span class="p">)</span>
+<span class="n">os</span><span class="o">.</span><span class="n">rmdir</span><span class="p">(</span><span class="s">'/tmp/chroot_jail'</span><span class="p">)</span>
+</pre></div>
+
+<div class="highlight highlight-python"><pre><span class="err">$</span> <span class="n">sudo</span> <span class="n">python</span> <span class="n">run_untrusted_code</span><span class="o">.</span><span class="n">py</span>
+<span class="p">[</span><span class="s">'you_are_in_jail_muahaha'</span><span class="p">]</span>
+</pre></div>
+
+
       </section>
     </div>
 
     <!-- FOOTER  -->
     <div id="footer_wrap" class="outer">
       <footer class="inner">
-        <p class="copyright">Process-isolation maintained by <a href="https://github.com/alexflint">alexflint</a></p>
+        <p class="copyright">Process Isolation in Python maintained by <a href="https://github.com/alexflint">alexflint</a></p>
         <p>Published with <a href="http://pages.github.com">GitHub Pages</a></p>
       </footer>
     </div>
