@@ -46,7 +46,7 @@ def dragons_here():
 Running this code causes a hard abort (not a regular python exception),
 which makes it difficult to debug:
 
-```python
+```
 >>> import buggy
 >>> buggy.dragons_here()
 Segmentation fault: 11
@@ -66,8 +66,8 @@ except ProcessTerminationError as ex:
 
 ### Using process isolation
 
-`process_isolation` tries to be as transparent as possible. In many
-cases it is possible to simply replace 
+`process_isolation` tries to be invisible whenever possible. In many
+cases it is possible to simply replace
 
     import X
 
@@ -79,29 +79,28 @@ and leave all other code unchanged.
 
 Internally, `process_isolation` shuttles data back and forward between
 the main python interpreter and the forked child process. When you
-call a function from a module imported via `import_isolated`, that
-function runs in the isolated process.
+call a function from an isolated module, that function runs in the
+isolated child process.
 
 ```python
 os = import_isolated('os')
 os.rmdir('/tmp/foo')  # this function will run in the isolated child process
 ```
 
-The same is true when you instantiate a class (after all, a class
-constructor is really just a special kind of function).
+The same is true when you instantiate a class -- after all, a
+constructor is really just a special kind of function.
 
 ```python
 collections = import_isolated('collections')
 my_dict = collections.OrderedDict()
 ```
 
-This code created an `OrderedDict` object residing in the isolated
+This code creates an `OrderedDict` object residing in the isolated
 process. To make sure the isolated process really is isolated, the
-OrderedDict will reside in the child process forever. The `my_dict`
-object in the main python interpreter is actually a proxy object that
-will shuttle member calls back and forth to the child process. For all
-intents and purposes, you can treat `my_dict` just like a real
-`OrderedDict`.
+`OrderedDict` will stay in the child process forever. `my_dict` is
+actually a proxy object that will shuttle member calls back and forth
+to the child process. For all intents and purposes, you can treat
+`my_dict` just like a real `OrderedDict`.
 
 ```python
 my_dict['abc'] = 123
@@ -117,10 +116,16 @@ except KeyError:
 ```
 
 Under the hood, each of these calls involves some shuttling of data
-back and forth between the child and server process.
+back and forth between the child and server process. If anything were
+to crash along the way, you would get a `ProcessTerminatedError`
+instead of a hard crash, but other than that, everything should work
+exactly as if there were no process isolation involved.
+
+### Copying objects between processes
 
 Sometimes this proxying behaviour can be inconvenient or
-inefficient. To get a copy of the real object behind the proxy, use `byvalue`.
+inefficient. To get a copy of the real object behind the proxy, use
+`byvalue`:
 
 ```python
 from process_isolation import import_isolated, byvalue
@@ -130,6 +135,13 @@ the_real_deal = byvalue(collections.OrderedDict({'fred':11, 'tom':12}))
 
 print type(proxy_to_a_dict)
 print type(the_real_deal)
+```
+
+Which prints:
+
+```
+>>> process_isolation.ObjectProxy
+>>> collections.OrderedDict
 ```
 
 Some caveats to using `byvalue` are:
@@ -156,24 +168,23 @@ underlying C library using boost python and we wanted to use python to
 manage the datasets, accumulate success rates, generate reports, and
 so on. During development, it was not uncommon for our C library to
 crash from time to time, but instead of getting an empty report
-whenever any one of the thousands of test cases caused a crash, we
-wanted to record exactly which inputs caused the crash, and then
-continue to run the remaining tests. We built `process_isolation` and
-used it to run all the computer vision code in an isolated process,
-which allowed us to give detailed error reports when something went
-wrong at the C level, and to continue running the remaining tests
-afterwards.
+whenever any one test cases caused a crash, we wanted to record
+exactly which inputs caused the crash, and then continue to run the
+remaining tests. We built `process_isolation` and used it to run all
+the computer vision code in an isolated process, which allowed us to
+give detailed error reports when something went wrong at the C level,
+and to continue running the remaining tests afterwards.
 
-We were also using running our computer vision code interactively from
-ipython, but importing the computer vision module directly meant that
-a crash at the C level would destroyed the entire ipython session and
-all the working variables along with it. Anyone who has worked with
-interactive numerical experiments will appreciate the frustration of
-losing an hour of carefully constructed matrices just before the
-command that would have completed whatever experiment was being
-run. Using `process_isolation` from ipython avoided this possibility
-in a very robust way. At worst case, a command would raise a
-`ProcessTerminationError`, but all the variables and other session
+We were also running our computer vision code interactively from
+ipython. However, importing the computer vision module directly meant
+that a crash at the C level would destroyed the entire ipython session
+and all the working variables along with it. Anyone who has done
+interactive experiments with numerical software will appreciate the
+frustration of losing an hour of carefully constructed matrices just
+before the command that would have completed whatever experiment was
+being run. Using `process_isolation` from ipython avoided this
+possibility in a very robust way. At worst case, a command would raise
+a `ProcessTerminationError`, but all the variables and other session
 state would remain intact.
 
 **Running untrusted code**
@@ -232,6 +243,8 @@ $ sudo python run_untrusted_code.py
 ['you_are_in_jail_muahaha']
 ```
 
+<!--
+
 **Reloading binary modules**
 
 Check back soon
@@ -244,3 +257,4 @@ Check back soon
 
 Check back soon
 
+-->
