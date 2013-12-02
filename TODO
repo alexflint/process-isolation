@@ -22,16 +22,21 @@
 			flask (isolate the client funcs)
 # - Add an API to restart the server if it goes down
 # - If a module already exists when it is imported isolated then replace it
+# - Make it possible to pickle proxy objects
 
 # TODO - before 1.0
 # - trim the exposed interface using an __init__.py file
 # - Transport stack trace from server to client and append it to the system one at the client end
 # - Make it possible to automatically restart the server?
+    - Create a new context, do not restart an existing one
+    - That way, proxies that point to a context that has terminated will be caught cleanly
+    - Also removes the need to clean out the client-side proxy cache
 # - When a proxy's __del__ gets called, change the server-side registry reference to a weakref so that
 #   objects eventually get cleaned up
 # - Deal with call to sys.exit() in child process
 # - Detect when cPickle fails to pickle an object and automatically proxy it instead
-
+# - During a byvalue fetch, import packages into the client as necessary
+# - Hide attach_to_client, client, etc in ipython tab completion? Add leading underscore?
 
 # TODO - before 2.0
 # - Have the client 
@@ -46,7 +51,7 @@
 #       foo.bar()
 # - Make it possible to host objects on the client and send proxies to them to the server
 # - Deal with multi-threaded clients and servers
-
+# - Better support for jailing the child process (e.g. os.chroot and friends)
 
 # TODO - less important
 # - Figure out how to get rid of RemoteRef -- too confusing!
@@ -70,3 +75,4 @@
 #   server-side implementation. We can't cleanly meet both
 #   requirements if we use pickle for transporting proxies between
 #   client and server.
+# - could dynamically import packages during unpickling on both client and server side
