@@ -22,12 +22,13 @@ sys.stdout.write('Hello world\n')
 
 A few things happened here:
 
-1. We imported the `process_isolation` module:
+1. We imported the `process_isolation` module.
 
 2. A child process was forked off from the main python process and the
    `sys` module was imported into that process.
 
 3. The main python process requested that the child process run
+   `sys.stdout.write('Hello world\n')`
 
 4. The child process wrote `Hello world` to standard output.
 
