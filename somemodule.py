@@ -150,7 +150,3 @@ lambda_101 = lambda: 101
 
 def get_lambda_101():
     return lambda: 101
-
-class Unpicklable(object):
-    def __getstate__(self):
-        assert(False)

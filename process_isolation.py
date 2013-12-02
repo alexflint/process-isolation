@@ -38,7 +38,7 @@ class ProcessTerminationError(Exception):
     '''Indicates that the host process crashed while processing a command.'''
     def __init__(self, signal):
         self._signal_or_returncode = signal
-        message = 'Isolation host terminated with signal or returncode '+str(signal)
+        message = 'Isolated child process terminated with signal or returncode '+str(signal)
         Exception.__init__(self, message)
 
 class ClientStateError(Exception):
@@ -881,13 +881,24 @@ class IsolationContext(object):
     '''Represents a domain for executing code that is isolated from
     the rest of the process. Each isolation context corresponds to a
     single sub-process in which one or more python modules has been
-    loaded.'''
+    loaded.
+
+    An IsolationContext is constructed in an uninitialized
+    state. Calling start() will cause a child process to be created
+    and linked to this context. If that child process terminates, for
+    example due to an signal from the operating system, then the
+    isolation context will be permanently in a terminated state and
+    any attempt to access remote objects will cause a
+    ClientStateError. Isolation contexts cannot be re-started:
+    instead, create a new isolation context.'''
     def __init__(self):
         self._client = None
 
     @property
     def remote_pid(self):
-        '''Get the PID of the process in which this context will run code.'''
+        '''Get the operating system process ID of the process in which
+        this context will run code. This is equivalent to calling
+        os.getpid() in the child process.'''
         return self.client.server_process.pid
 
     @property
