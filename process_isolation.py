@@ -914,17 +914,6 @@ class IsolationContext(object):
         # Create a client to talk to the server
         self._client = Client(server_process, request_queue, response_queue)
 
-    def restart(self):
-        '''Terminate the child process and start a new process. This
-        does not restore any state, so any python modules that were
-        previously loaded will need to be reloaded.'''
-        logger.debug('IsolationContext[%d] restarting', id(self))
-        if self._client is not None:
-            # It is always safe to call cleanup no matter what state the client is in
-            self._client.cleanup()
-            self._client = None
-        self.start()
-
     def ensure_started(self):
         '''If the subprocess for this isolation context has not been created then create it.'''
         if self._client is None:
