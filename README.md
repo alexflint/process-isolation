@@ -1,8 +1,18 @@
-# Process Isolation in Python
+# Elegant Process Isolation in Pure Python
 
 Process isolation is a simple and elegant tool that lets you run
 python modules in child processes but interact with them like ordinary
 python modules.
+
+### Installation
+
+Process isolation is implemented in pure python so installation is simple:
+
+    $ pip install process_isolation
+
+### Quickstart
+
+Let's start with the hello world of process isolation:
 
 ```python
 from process_isolation import import_isolated
