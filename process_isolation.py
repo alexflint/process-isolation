@@ -919,16 +919,16 @@ class IsolationContext(object):
         if self._client is None:
             self.start()
 
-    def load_module(self, module_name):
+    def load_module(self, module_name, path=None):
         '''Import a module into this isolation context and return a proxy for it.'''
         self.ensure_started()
-        mod = self.client.call(_load_module, module_name, sys.path)
+        if path is None:
+            path = sys.path
+        mod = self.client.call(_load_module, module_name, path)
         mod.__isolation_context__ = self
         return mod
 
         
-
-
 
 
 def default_context():
@@ -936,15 +936,15 @@ def default_context():
         default_context._instance = IsolationContext()
     return default_context._instance
 
-def load_module(module_name):
+def load_module(module_name, path=None):
     '''Import a module into the default isolated context and return a
     reference to it. This does not import the module into sys.modules
     and it does not have any of the other effects of python's "import
     foo" syntax.'''
-    return default_context().load_module(module_name)
+    return default_context().load_module(module_name, path)
 
-def import_isolated(module_name, fromlist=[], level=-1):
+def import_isolated(module_name, fromlist=[], level=-1, path=None):
     '''Import an module into an isolated context as if with
     "__import__('module_name')"'''
-    sys.modules[module_name] = load_module(module_name)
+    sys.modules[module_name] = load_module(module_name, path=path)
     return __import__(module_name, fromlist=fromlist, level=level)
