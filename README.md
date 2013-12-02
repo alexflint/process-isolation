@@ -3,28 +3,28 @@
 Process isolation is a simple and elegant tool that lets you run
 python modules in sub-processes.
 
-```
+```python
 from process_isolation import import_isolated
 sys = import_isolated('sys')
 sys.stdout.write('Hello world\n')
-````
+```
 
 A few things happened here:
 
 1. We imported the `process_isolation` module:
-    ```
+    ```python
     from process_isolation import import_isolated
     ````
 
 2. A child process was forked off from the main python process and the
    `sys` module was imported in that process:
-    ```
+    ```python
     sys = import_isolated('sys')
     ```
 
 3. The main python process requested that the child process run
     `sys.stdout.write('Hello world\n')`:
-    ```
+    ```python
     sys.stdout.write('Hello world\n')
     ```
 
@@ -35,7 +35,7 @@ One reason to run code in an isolated process is to debug code that
 might crash at the C level (i.e. with a segmentation fault or similar
 rather than a python exception). Here is some dangerous code:
 
-```
+```python
 # buggy.py:
 
 import types
@@ -46,7 +46,7 @@ def dragons_here():
 Running this code causes a hard abort (not a regular python exception),
 which makes it difficult to debug:
 
-```
+```python
 >>> import buggy
 >>> buggy.dragons_here()
 Segmentation fault: 11
@@ -55,7 +55,7 @@ Segmentation fault: 11
 However, inside an isolated process we can safely run this without our
 whole python interpreter crashing:
 
-```
+```python
 from process_isolation import import_isolated, ProcessTerminationError
 buggy = import_isolated('buggy')
 try:
@@ -82,7 +82,7 @@ the main python interpreter and the forked child process. When you
 call a function from a module imported via `import_isolated`, that
 function runs in the isolated process.
 
-```
+```python
 os = import_isolated('os')
 os.rmdir('/tmp/foo')  # this function will run in the isolated child process
 ```
@@ -90,7 +90,7 @@ os.rmdir('/tmp/foo')  # this function will run in the isolated child process
 The same is true when you instantiate a class (after all, a class
 constructor is really just a special kind of function).
 
-```
+```python
 collections = import_isolated('collections')
 my_dict = collections.OrderedDict()
 ```
@@ -103,7 +103,7 @@ will shuttle member calls back and forth to the child process. For all
 intents and purposes, you can treat `my_dict` just like a real
 `OrderedDict`.
 
-```
+```python
 my_dict['abc'] = 123
 print my_dict['abc']
 print my_dict.viewvalues()
@@ -122,7 +122,7 @@ back and forth between the child and server process.
 Sometimes this proxying behaviour can be inconvenient or
 inefficient. To get a copy of the real object behind the proxy, use `byvalue`.
 
-```
+```python
 from process_isolation import import_isolated, byvalue
 collections = import_isolated('collections')
 proxy_to_a_dict = collections.OrderedDict({'fred':11, 'tom':12})
@@ -148,7 +148,7 @@ versa.
 
 ### Why process isolation?
 
-** Dealing with misbehaving C modules **
+**Dealing with misbehaving C modules**
 
 We originally built `process_isolation` to help benchmark a computer
 vision library written in C. We had built a python interface to the
@@ -176,7 +176,7 @@ in a very robust way. At worst case, a command would raise a
 `ProcessTerminationError`, but all the variables and other session
 state would remain intact.
 
-** Running untrusted code **
+**Running untrusted code**
 
 Although there are many ways of running untrusted code in python, the
 most secure way is to use a restricted environment enforced by the
@@ -185,7 +185,7 @@ in a subprocess. Here is how to create a `chroot` jail.
 
 First we create an "untrusted" module to experiment with.
 
-```
+```python
 # untrusted.py: untrusted code lives here
 import os
 def ls_root():
@@ -196,7 +196,7 @@ Next we set up the chroot jail. Note that this code must be run with
 superuser priveleges because the `chroot` system call requires
 superuser priveleges.
 
-```
+```python
 # run_untrusted_code.py
 import os
 import process_isolation
@@ -227,16 +227,16 @@ os.remove('/tmp/chroot_jail/you_are_in_jail_muahaha')
 os.rmdir('/tmp/chroot_jail')
 ```
 
-```
+```python
 $ sudo python run_untrusted_code.py
 ['you_are_in_jail_muahaha']
 ```
 
-** Reloading binary modules **
+**Reloading binary modules**
 
 Check back soon
 
-** Running unittests in separate processes **
+**Running unittests in separate processes**
 
 Check back soon
 
