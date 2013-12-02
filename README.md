@@ -16,12 +16,14 @@ A few things happened here:
     from process_isolation import import_isolated
     ````
 
-2. The process forked and the `sys` module was imported in the child process:
+2. A child process was forked off from the main python process and the
+   `sys` module was imported in that process:
     ```
     sys = import_isolated('sys')
     ```
 
-3. The parent process requested that the child process run `sys.stdout.write('Hello world\n')`:
+3. The main python process requested that the child process run
+    `sys.stdout.write('Hello world\n')`:
     ```
     sys.stdout.write('Hello world\n')
     ```
@@ -29,9 +31,9 @@ A few things happened here:
 4. The child process wrote `Hello world` to standard output.
 
 
-One reason tun run code in an isolated process is to debug code that
-crashes at the operating system level with a segmentation fault or
-other signal. Here is some dangerous code:
+One reason to run code in an isolated process is to debug code that
+might crash at the C level (i.e. with a segmentation fault or similar
+rather than a python exception). Here is some dangerous code:
 
 ```
 # buggy.py:
@@ -50,8 +52,8 @@ which makes it difficult to debug:
 Segmentation fault: 11
 ```
 
-We can safely run this code inside an isolated process, and do
-something when it crashes:
+However, inside an isolated process we can safely run this without our
+whole python interpreter crashing:
 
 ```
 from process_isolation import import_isolated, ProcessTerminationError
@@ -60,7 +62,7 @@ try:
     buggy.dragons_here()
 except ProcessTerminationError as ex:
     print 'There be dragons!'
-````
+```
 
 ### Using process isolation
 
@@ -73,18 +75,172 @@ with
 
     X = import_isolated('X')
 
-and leave all other code unchanged. `process_isolation` shuttles data
-back and forward between the main python interpreter and the forked
-child process, using proxies on the client side in place of objects
-that actually reside inside an isolated sub-process.
+and leave all other code unchanged. 
 
-### Caveats
+Internally, `process_isolation` shuttles data back and forward between
+the main python interpreter and the forked child process. When you
+call a function from a module imported via `import_isolated`, that
+function runs in the isolated process.
+
+```
+os = import_isolated('os')
+os.rmdir('/tmp/foo')  # this function will run in the isolated child process
+```
+
+The same is true when you instantiate a class (after all, a class
+constructor is really just a special kind of function).
+
+```
+collections = import_isolated('collections')
+my_dict = collections.OrderedDict()
+```
+
+This code created an `OrderedDict` object residing in the isolated
+process. To make sure the isolated process really is isolated, the
+OrderedDict will reside in the child process forever. The `my_dict`
+object in the main python interpreter is actually a proxy object that
+will shuttle member calls back and forth to the child process. For all
+intents and purposes, you can treat `my_dict` just like a real
+`OrderedDict`.
+
+```
+my_dict['abc'] = 123
+print my_dict['abc']
+print my_dict.viewvalues()
+for key,value in my_dict.iteritems():
+    print key,value
+
+try:
+    x = my_dict['xyz']
+except KeyError:
+    print 'The dictionary has no 
+```
+
+Under the hood, each of these calls involves some shuttling of data
+back and forth between the child and server process.
+
+Sometimes this proxying behaviour can be inconvenient or
+inefficient. To get a copy of the real object behind the proxy, use `byvalue`.
+
+```
+from process_isolation import import_isolated, byvalue
+collections = import_isolated('collections')
+proxy_to_a_dict = collections.OrderedDict({'fred':11, 'tom':12})
+the_real_deal = byvalue(collections.OrderedDict({'fred':11, 'tom':12}))
+
+print type(proxy_to_a_dict)
+print type(the_real_deal)
+```
+
+Some caveats to using `byvalue` are:
+
+1. All calls to members of `the_real_deal` will now execute in the
+main python interpreter, so if one of those members causes a segfault
+then the main python interpreter will crash, just as if you ran the
+whole thing without involving `process_isolation` at all.
+
+2. `byvalue` copies an object from the child process to the main
+python interpreter, with the usual semantics of deep copies. Any
+references to the original object will continue to refer to the
+original object. If the original object is changed, those changes will
+not show up in the copy residing in main python interpreter, and vice
+versa.
 
 ### Why process isolation?
 
-### More sophisticated examples
+** Dealing with misbehaving C modules **
 
-### Copying objects between processes
+We originally built `process_isolation` to help benchmark a computer
+vision library written in C. We had built a python interface to the
+underlying C library using boost python and we wanted to use python to
+manage the datasets, accumulate success rates, generate reports, and
+so on. During development, it was not uncommon for our C library to
+crash from time to time, but instead of getting an empty report
+whenever any one of the thousands of test cases caused a crash, we
+wanted to record exactly which inputs caused the crash, and then
+continue to run the remaining tests. We built `process_isolation` and
+used it to run all the computer vision code in an isolated process,
+which allowed us to give detailed error reports when something went
+wrong at the C level, and to continue running the remaining tests
+afterwards.
+
+We were also using running our computer vision code interactively from
+ipython, but importing the computer vision module directly meant that
+a crash at the C level would destroyed the entire ipython session and
+all the working variables along with it. Anyone who has worked with
+interactive numerical experiments will appreciate the frustration of
+losing an hour of carefully constructed matrices just before the
+command that would have completed whatever experiment was being
+run. Using `process_isolation` from ipython avoided this possibility
+in a very robust way. At worst case, a command would raise a
+`ProcessTerminationError`, but all the variables and other session
+state would remain intact.
+
+** Running untrusted code **
+
+Although there are many ways of running untrusted code in python, the
+most secure way is to use a restricted environment enforced by the
+operating system. `process_isolation` is ideal for running some code
+in a subprocess. Here is how to create a `chroot` jail. 
+
+First we create an "untrusted" module to experiment with.
+
+```
+# untrusted.py: untrusted code lives here
+import os
+def ls_root():
+    return os.listdir('/')
+```
+
+Next we set up the chroot jail. Note that this code must be run with
+superuser priveleges because the `chroot` system call requires
+superuser priveleges.
+
+```
+# run_untrusted_code.py
+import os
+import process_isolation
+
+# Start a subprocess but do not import the untrusted module until we've installed the chroot jail
+context = process_isolation.default_context()
+context.ensure_started()
+
+# Create a directoy in which to jail the untrusted module
+os.mkdir('/tmp/chroot_jail')
+
+# Create a file inside the chroot so that we can recognize the jail when we see it
+with open('/tmp/chroot_jail/you_are_in_jail_muahaha','w'):
+    pass
+
+try:
+    # Install the chroot
+    context.client.call(os.chroot, '/tmp/chroot_jail')
+except OSError:
+    print 'This script must be run with superuser priveleges'
+
+# Now we can safely import and run the untrusted module
+untrusted = context.load_module('untrusted', path=['.'])
+print untrusted.ls_root()
+
+# Clean up
+os.remove('/tmp/chroot_jail/you_are_in_jail_muahaha')
+os.rmdir('/tmp/chroot_jail')
+```
+
+```
+$ sudo python run_untrusted_code.py
+['you_are_in_jail_muahaha']
+```
+
+** Reloading binary modules **
+
+Check back soon
+
+** Running unittests in separate processes **
+
+Check back soon
 
 ### Under the hood
+
+Check back soon
 
