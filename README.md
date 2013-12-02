@@ -1,7 +1,8 @@
 # Process Isolation in Python
 
 Process isolation is a simple and elegant tool that lets you run
-python modules in sub-processes.
+python modules in child processes but interact with them like ordinary
+python modules.
 
 ```python
 from process_isolation import import_isolated
@@ -12,28 +13,18 @@ sys.stdout.write('Hello world\n')
 A few things happened here:
 
 1. We imported the `process_isolation` module:
-    ```python
-    from process_isolation import import_isolated
-    ````
 
 2. A child process was forked off from the main python process and the
-   `sys` module was imported in that process:
-    ```python
-    sys = import_isolated('sys')
-    ```
+   `sys` module was imported into that process.
 
 3. The main python process requested that the child process run
-    `sys.stdout.write('Hello world\n')`:
-    ```python
-    sys.stdout.write('Hello world\n')
-    ```
 
 4. The child process wrote `Hello world` to standard output.
 
 
 One reason to run code in an isolated process is to debug code that
-might crash at the C level (i.e. with a segmentation fault or similar
-rather than a python exception). Here is some dangerous code:
+might crash at the C level, such as due to a segmentation fault rather
+than an ordinary python exception. Here is some dangerous code:
 
 ```python
 # buggy.py:
@@ -52,8 +43,8 @@ which makes it difficult to debug:
 Segmentation fault: 11
 ```
 
-However, inside an isolated process we can safely run this without our
-whole python interpreter crashing:
+However, inside an isolated process we can safely run this code without our
+entire python interpreter crashing:
 
 ```python
 from process_isolation import import_isolated, ProcessTerminationError
@@ -75,12 +66,10 @@ with
 
     X = import_isolated('X')
 
-and leave all other code unchanged. 
-
-Internally, `process_isolation` shuttles data back and forward between
-the main python interpreter and the forked child process. When you
-call a function from an isolated module, that function runs in the
-isolated child process.
+and leave all other code unchanged. Internally, `process_isolation`
+shuttles data back and forward between the main python interpreter and
+the forked child process. When you call a function from an isolated
+module, that function runs in the isolated child process.
 
 ```python
 os = import_isolated('os')
@@ -100,7 +89,7 @@ process. To make sure the isolated process really is isolated, the
 `OrderedDict` will stay in the child process forever. `my_dict` is
 actually a proxy object that will shuttle member calls back and forth
 to the child process. For all intents and purposes, you can treat
-`my_dict` just like a real `OrderedDict`.
+`my_dict` just like a real `OrderedDict`:
 
 ```python
 my_dict['abc'] = 123
@@ -112,7 +101,7 @@ for key,value in my_dict.iteritems():
 try:
     x = my_dict['xyz']
 except KeyError:
-    print 'The dictionary has no 
+    print 'The dictionary does not contain xyz'
 ```
 
 Under the hood, each of these calls involves some shuttling of data
@@ -137,26 +126,24 @@ print type(proxy_to_a_dict)
 print type(the_real_deal)
 ```
 
-Which prints:
+This will print:
 
 ```
 >>> process_isolation.ObjectProxy
 >>> collections.OrderedDict
 ```
 
-Some caveats to using `byvalue` are:
-
-1. All calls to members of `the_real_deal` will now execute in the
-main python interpreter, so if one of those members causes a segfault
-then the main python interpreter will crash, just as if you ran the
-whole thing without involving `process_isolation` at all.
-
-2. `byvalue` copies an object from the child process to the main
+`byvalue` copies an object from the child process to the main
 python interpreter, with the usual semantics of deep copies. Any
 references to the original object will continue to refer to the
 original object. If the original object is changed, those changes will
 not show up in the copy residing in main python interpreter, and vice
 versa.
+
+Note that all calls to members of `the_real_deal` will now execute in
+the main python interpreter, so if one of those members causes a
+segfault then the main python interpreter will crash, just as if you
+ran the whole thing without involving `process_isolation` at all.
 
 ### Why process isolation?
 
