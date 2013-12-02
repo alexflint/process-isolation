@@ -350,6 +350,7 @@ class CallableObjectProxy(ObjectProxy):
 class ExceptionProxy(Exception,ObjectProxy):
     def __init__(self, prime_id, prime_docstring=None):
         ObjectProxy.__init__(self, prime_id, prime_docstring)
+        Exception.__init__(self)
     def __reduce__(self):
         return ExceptionProxy, (self.prime_id,)
 
@@ -791,10 +792,12 @@ class Client(object):
 
         # Unpack any exception raised on the server side
         if isinstance(result, ExceptionalResult):
+            # Attach the exception, which may be a proxy to a server-side exception
+            if isinstance(result.exception, Proxy):
+                self.attach_proxy(result.exception)
+
             # TODO: append the server-side traceback to the client-side traceback
             logger.debug('client recieved exceptional result: %s', result)
-            #logger.debug('server-side traceback:')
-            #logger.debug(result.traceback)
             result.exception.message += 'Server-side traceback:\n' + result.traceback
             if isinstance(result.exception, BaseException):
                 raise result.exception
