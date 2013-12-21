@@ -329,22 +329,21 @@ class SqliteTest(unittest.TestCase):
 
    
 if __name__ == '__main__':
-    # Log to stdout
-    logger.addHandler(logging.StreamHandler(sys.stdout))
-    logger.setLevel(logging.DEBUG)
-
-    if len(sys.argv) == 1:
-        # With no arguments, run each test case in a separate python
-        # interpreter to avoid problems with too many files open.
+    # With no named tests, run each test case in a separate python
+    # interpreter to avoid problems with too many files open.
+    if all(arg.startswith('-') for arg in sys.argv[1:]):
         thismodule = sys.modules[__name__]
         keys = list(thismodule.__dict__.iterkeys())
-        for key in keys:
-            item = getattr(thismodule, key)
+        for testname in keys:
+            item = getattr(thismodule, testname)
             if isinstance(item, type) and issubclass(item, unittest.TestCase):
-                cmd = ['python', 'test.py', key]
-                sys.stderr.write('\n*** %s ***\n' % key)
-                subprocess.call(cmd)
+                sys.stderr.write('\n*** %s ***\n' % testname)
+                subprocess.call(['python'] + sys.argv + [testname])
     else:
-        # With no arguments, run each test case in a separate python
-        # interpreter to avoid problems with too many files open.
+        if '-v' in sys.argv:
+            # Log to stdout
+            logger.addHandler(logging.StreamHandler(sys.stdout))
+            logger.setLevel(logging.DEBUG)
+            sys.argv.remove('-v')
+
         unittest.main()
