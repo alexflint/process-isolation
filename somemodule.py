@@ -82,6 +82,9 @@ def raise_custom_exception():
     print 'Raising CustomException now.'
     raise CustomException()
 
+class EmptyObject(Unpicklable):
+    pass
+
 class ObjectWithItems(Unpicklable):
     def __init__(self, n):
         self._a = [0]*n

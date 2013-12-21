@@ -273,7 +273,7 @@ class ObjectProxy(Proxy):
         if attrname in ['_prime_id', '_client']:
             return super(ObjectProxy,self).__detattr__(attrname)
         else:
-            return self.client.call(gelattr, self, attrname)
+            return self.client.call(delattr, self, attrname)
 
     # Implement string-like special methods
     def __str__(self):
@@ -294,8 +294,6 @@ class ObjectProxy(Proxy):
         return self.client.call(operator.ge, self, other)
     def __eq__(self, other):
         return self.client.call(operator.eq, self, other)
-    def __ne__(self, other):
-        return self.client.call(operator.ne, self, other)
     def __ne__(self, other):
         return self.client.call(operator.ne, self, other)
     def __cmp__(self, other):
@@ -326,7 +324,9 @@ class ObjectProxy(Proxy):
     def __hash__(self, other):
         return self.client.call(hash, self, other)
     def __dir__(self):
-        return self.client.call(dir, self)
+        # according to python semantics dir(x) _must_ return a
+        # list. Returning a sequence-like object is not valid.
+        return byvalue(self.client.call(dir, self))
 
     # Note that we do not include get/set/delslice, etc because they
     # are deprecated and not necessary. If they exist on the prime

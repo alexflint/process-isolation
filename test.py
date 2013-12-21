@@ -57,6 +57,27 @@ class AccessorTest(SomeModuleTest):
         self.assertTrue(obj is obj2)
 
 
+class AttrTest(SomeModuleTest):
+    def test_setattr(self):
+        x = self.mod.EmptyObject()
+        x.foo = 1
+        self.assertEqual(x.foo, 1)
+
+    def test_hasattr(self):
+        x = self.mod.EmptyObject()
+        self.assertFalse(hasattr(x, 'foo'))
+        x.foo = 1
+        self.assertTrue(hasattr(x, 'foo'))
+
+    def test_delattr(self):
+        x = self.mod.EmptyObject()
+        x.foo = 1
+        self.assertTrue(hasattr(x, 'foo'))
+        delattr(x, 'foo')
+        self.assertFalse(hasattr(x, 'foo'))
+
+
+
 class ClassTest(SomeModuleTest):
     def test_two_copies_of_class(self):
         c1 = self.mod.SomeClass
