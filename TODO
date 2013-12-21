@@ -7,15 +7,14 @@
 # - Deal with generators
 # - Deal with files
 # - Deal with lambdas
+# - documentation
 
 # TODO - before first release
-# - documentation
-# - make a nice "insubprocess" function decorator
 # - test on: 
 			[done] sys
 			[done] os
 			marshal
-			sqlite
+			[done] sqlite
 			thread
 			numpy
 			runpy
@@ -37,6 +36,7 @@
 # - Detect when cPickle fails to pickle an object and automatically proxy it instead
 # - During a byvalue fetch, import packages into the client as necessary
 # - Hide attach_to_client, client, etc in ipython tab completion? Add leading underscore?
+# - make a "insubprocess" function decorator
 
 # TODO - before 2.0
 # - Have the client 

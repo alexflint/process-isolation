@@ -21,12 +21,6 @@ import threading
 import logging
 import cPickle
 
-# TODO moved to file "TODO"
-
-# TEMP DEBUG:
-sys.setrecursionlimit(100)
-
-
 logger = logging.getLogger('process_isolation')
 
 class TerminateProcess(BaseException):
@@ -566,11 +560,6 @@ class Server(object):
             else:
                 return ObjectProxy(prime_id, prime_docstring)
 
-        # TEMP HACK
-        elif operator.isSequenceType(prime):
-            logger.debug('  not wrapping sequence')
-            return prime  # indicates that we should return this object by value
-
         else:
             logger.debug('  wrapping as object')
             return ObjectProxy(prime_id, prime_docstring)
@@ -784,7 +773,6 @@ class Client(object):
             self.state = ClientState.READY
             raise InternalClientError, \
                 'Error in channel.get: '+ex.message, sys.exc_info()[2]
-            
 
         # Unpickle the result
         result = cPickle.loads(result_str)
@@ -874,7 +862,7 @@ class Client(object):
                 # process terminated at some point between the last
                 # execute() and the call to terminate()
                 # For now we just ignore this.
-                pass            
+                pass
 
 
 class IsolationContext(object):
