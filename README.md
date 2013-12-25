@@ -4,6 +4,8 @@
 you run python modules in child processes but interact with them like
 ordinary python modules.
 
+This project is maintained by alex.flint@gmail.com
+
 ### Installation
 
 Process isolation is implemented in pure python so installation is simple:
