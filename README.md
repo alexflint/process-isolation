@@ -1,5 +1,9 @@
 # Process Isolation in Python
 
+[ ![Codeship Status for alexflint/process-isolation](https://www.codeship.io/projects/8c7cc2c0-3297-0131-bf25-7e400f71bb97/status?branch=master)](https://www.codeship.io/projects/9633)
+
+[![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/alexflint/process-isolation/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
+
 `process_isolation` is a simple and elegant python module that lets
 you run python modules in child processes but interact with them like
 ordinary python modules.
@@ -258,5 +262,3 @@ Check back soon
 Check back soon
 
 -->
-
-[![Bitdeli Badge](https://d2weczhvl823v0.cloudfront.net/alexflint/process-isolation/trend.png)](https://bitdeli.com/free "Bitdeli Badge")
